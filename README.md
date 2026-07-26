@@ -1,0 +1,200 @@
+# scriba
+
+Voice memo in, NotebookLM source out. Transcribes, separates the voices, and remembers who is who.
+
+Built on [whisperX](https://github.com/m-bain/whisperX) and [pyannote](https://github.com/pyannote/pyannote-audio). Runs on your own machine; the audio never leaves it.
+
+```bash
+scriba run meeting.m4a
+scriba name meeting.m4a SPEAKER_00=Ada SPEAKER_01=Rafiq
+# from the next recording on, Ada and Rafiq are picked out on their own
+```
+
+## Why this exists
+
+Record a conversation, transcribe it, drop it into NotebookLM, ask it questions. The flow is obvious. Using it for real breaks in four places.
+
+### 1. The wrong language raises no error, it invents a text
+
+The bug this project was born from. A script with a hardcoded `--language it`, handed a recording that was actually in Spanish. Whisper did not fail. It guessed, and produced fluent, punctuated, entirely made-up Italian.
+
+The two languages are close enough that guessing produces real words. Spanish and Italian are full of pairs that sound alike and mean different things, so the output lands on the wrong one and reads perfectly:
+
+| Spanish | Heard as Italian | Which means |
+|---|---|---|
+| `salir` (to leave) | `salire` | to go up |
+| `carta` (letter) | `carta` | paper |
+| `burro` (donkey) | `burro` | butter |
+| `éxito` (success) | `esito` | outcome |
+
+Those four are the textbook pairs, put here to show the shape of the failure. What it does to a real recording is worse, because it does it to every sentence at once and each one comes out plausible.
+
+Nothing on screen said anything was wrong. The text reads as correct, and it lands in NotebookLM as a source you trust, where you then reason on top of it for weeks.
+
+Left alone, Whisper picks the language from the first 30 seconds, which in a real conversation is small talk. [`lang.py`](scriba/lang.py) samples five windows across the whole file and votes, weighting each window by confidence. When the vote is close it says so instead of choosing in silence.
+
+### 2. Speaker labels restart from zero every time
+
+Diarization hands you `SPEAKER_00`, `SPEAKER_01`. Those labels are arbitrary, and they are reassigned on every file: the same person is `SPEAKER_00` on Monday and `SPEAKER_02` on Tuesday. So you rename them by hand, every time, forever.
+
+pyannote computes a 256-dimensional embedding per speaker anyway (that is how it decides who is who), and whisperX throws it away. [`diarize.py`](scriba/diarize.py) calls pyannote directly and keeps those vectors; [`voices.py`](scriba/voices.py) files them under the name you assign.
+
+Name someone once. After that it sticks.
+
+Three zones, not two:
+
+| Cosine similarity | What happens |
+|---|---|
+| 0.75 and above | the name is applied |
+| 0.55 to 0.75 | "Maybe *Ada*?" A suggestion. Confirming stays your job. |
+| below 0.55 | new voice |
+
+Plus a 0.05 margin over the runner-up: when two people on file come out almost equally close, nothing is chosen. **An "I don't know" beats a wrong name.** A wrong name raises no error either. It quietly poisons every transcript downstream.
+
+The thresholds are a starting point, not gospel. To set them properly: hand-label three or four conversations, find where the same-speaker and different-speaker similarity distributions cross, put the threshold there. Twenty minutes of annotated audio tells you more than any published benchmark, since for diarization in Italian none exists.
+
+### 3. Whisper's "segments" are not conversational turns
+
+Whisper cuts roughly every 30 seconds no matter who is speaking. On a seven-minute test file that gave 16 blocks, each one holding more than one speaker. scriba realigns at word level and reassembles real turns: same file, 41 turns. That is the difference between a list of fragments and something a person (or a model) can read.
+
+### 4. NotebookLM reads text, it does not browse a file tree
+
+SRT and VTT shatter every sentence into two-second blocks with sequence numbers and timecodes. All of that is noise that eats context and makes retrieval worse. JSON is worse still.
+
+The default output is Markdown: a header block with participants, duration and language, then turns with the name in bold and a timestamp at the start of each one.
+
+Voices that could not be identified **are marked as unidentified inside the source**. Leave that out and NotebookLM treats "Voice 2" as a person it knows, then builds confident answers on top of it.
+
+```markdown
+# Team sync, 18 July
+
+## Overview
+- **Duration**: 00:47:12
+- **Participants**: Ada (18:22 of speech), Rafiq (14:05 of speech)
+- **Unidentified voices**: Voice 3. A distinct person, but their name is
+  never spoken in the recording and must not be inferred.
+
+## Transcript
+
+**Ada** [00:12]: Right, so where did we land on the migration?
+
+**Rafiq** [00:31]: Staging is done. Production waits for the backup window.
+```
+
+## Install
+
+Needs Python 3.10 or newer, `ffmpeg`, and a Hugging Face account for the pyannote models.
+
+```bash
+conda create -n scriba python=3.11 -y && conda activate scriba
+pip install git+https://github.com/eugenionerelli/scriba
+```
+
+The pyannote token goes into the Keychain, never into a file:
+
+```bash
+scriba token hf_xxxxxxxx
+```
+
+Then accept the conditions on [speaker-diarization-3.1](https://hf.co/pyannote/speaker-diarization-3.1), on [segmentation-3.0](https://hf.co/pyannote/segmentation-3.0), and on [speaker-diarization-community-1](https://hf.co/pyannote/speaker-diarization-community-1), using the same account as the token. Skip that and the download fails with a bare 403 that explains nothing. The third one matters even if you never ask for community-1: under pyannote 4, loading 3.1 pulls one of its files from that repo, so a single unaccepted licence blocks both models.
+
+### A note on telemetry
+
+pyannote 4 ships a telemetry module. Its `config.yaml` sets `metrics_enabled: true`, and it reports to an endpoint at pyannote.ai on every model load and every file processed. scriba turns it off in `scriba/__init__.py`, before any import path can reach pyannote, because the flag is read once at import time and setting it later does nothing. If you use pyannote directly for recordings of private conversations, set `PYANNOTE_METRICS_ENABLED=false` yourself.
+
+## Use
+
+```bash
+# the language is worked out on its own
+scriba run recording.m4a
+
+# if you know how many people are in the room, saying so helps a lot
+scriba run meeting.m4a --lang es --min-speakers 2 --max-speakers 2
+
+# who is who: how much each one talks, their longest turns,
+# and the moments where somebody says a name out loud
+scriba dossier meeting.m4a
+
+# assign the names, and from here on they are remembered
+scriba name meeting.m4a SPEAKER_00=Ada SPEAKER_01=Rafiq
+
+scriba voices list                    # who is on file
+scriba watch ~/Memos                  # transcribes every audio file that lands there
+```
+
+Every stage is cached under `~/.scriba/jobs/<name>/`, so redoing just the names re-transcribes nothing. Pass `--force asr|diar|lang|all` to rerun the stage you want.
+
+## The app
+
+```bash
+cd macapp && ./build.sh && open Scriba.app
+```
+
+SwiftUI, no outside dependencies, no `.xcodeproj`. SwiftPM builds the executable and the script assembles the bundle around it, so the whole thing stays in git as text.
+
+The app reimplements nothing. It runs the same `scriba` and reads its JSON state. The engine stays usable from a terminal, and there is no second copy of the logic to drift apart a day later.
+
+One rule for the interface: **every row in the speaker table has a play button right next to the name field.** If assigning a name costs less than checking it, people will assign without checking. Voices with very little speech are flagged as probable artefacts, which is usually what they are: somebody else's murmured agreement, promoted to a person.
+
+On first run, open Settings and point it at the Python of the environment where you installed `scriba`.
+
+## Speed, and why it is what it is
+
+`ctranslate2`, the engine under faster-whisper, has no Metal backend, so on Apple Silicon it runs entirely on the CPU. Measured on an M4 with 16 GB, same 6:45 of Spanish audio through both versions, same settings, warm model cache:
+
+| Stage | whisperX 3.3.1 | whisperX 3.8.6 |
+|---|---|---|
+| Load `large-v3` int8 | 9.1s | 34.7s |
+| Transcription, 8 threads | 601.8s | 443.1s |
+| Load the aligner | 0.5s | 2.8s |
+| Forced alignment, word level | 13.3s | 14.1s |
+| Diarization, pyannote 3.1 on CPU | 372.3s | not measured |
+| **Total** | **16m 37s** | |
+
+The transcription and the diarization are where the time goes, and no setting changes that: it is the library. The job cache exists for this reason, so you pay for it once. Alignment, the stage that sounds expensive, costs 13 seconds.
+
+Upgrading to 3.8.6 buys 26% on the transcription. The reason to do it is elsewhere. In 3.3.1 every token containing digits came out of the aligner with no timestamp at all, 5 out of 5 on the test file, three of them amounts of money. In 3.8.6 it is 0 out of 7, and two the old version dropped from the transcript altogether now appear. On a recording where the numbers are the content, those are the words you least want to lose.
+
+For contrast, Apple's own on-device recogniser via [yap](https://github.com/finnvoor/yap) does the same file in **24 seconds**, about 17 times realtime. It picks up the opening small talk that Whisper's VAD skips over. It garbles surnames more, splitting one of them into two words that are not words. And it has no diarization at all, so on its own it does not cover this job.
+
+What helps, in order:
+
+| Move | Effect | Risk |
+|---|---|---|
+| `--min-speakers` / `--max-speakers` when you know them | No speed-up. It is the one parameter that moves **correctness** the most | none |
+| `large-v3-turbo` in place of `large-v3` | About twice as fast | loses a little on noisy audio |
+| `scriba settings --set diarize_device=mps` | Diarization is 372s on CPU for 405s of audio, so about 1.1x realtime. MPS is reported at roughly 20x | pyannote has unreliable timestamps on Metal ([#1337](https://github.com/pyannote/pyannote-audio/issues/1337), closed with no fix). The 20x is their figure, not one measured here. Check it against a file whose answer you already know |
+
+Things that are not worth it, checked rather than assumed: `mlx-whisper` implements no beam search, so moving to it trades quality away against `beam_size=5`. `lightning-whisper-mlx` and `stable-ts` are both stalled. Apple's `SpeechAnalyzer` API is fast, and it exposes no diarization whatsoever, so it solves half the problem at best.
+
+## Layout
+
+```
+scriba/
+  lang.py       language detection over several samples
+  asr.py        whisper, tuned for conversational speech
+  diarize.py    pyannote called directly, so the embeddings survive
+  voices.py     the voice-print registry
+  naming.py     the "who is who" briefing: textual cues plus registry matches
+  export.py     output formats, NotebookLM first
+  pipeline.py   the orchestrator, cached per stage
+  watch.py      watched folder
+macapp/         the SwiftUI app
+tools/          stylecheck.py, the writing rules this repo is held to
+```
+
+## Notes
+
+Comments in the code say **why**, not what. Where there is a magic number or a choice that reads oddly, the reason sits next to it, usually a bug already paid for.
+
+`tools/stylecheck.py` holds the writing rules for this repo, prose and comments alike. Run it before a commit:
+
+```bash
+python tools/stylecheck.py README.md scriba/*.py
+```
+
+Written in one sitting, paired with Claude, starting from a real problem: a Spanish recording transcribed into Italian that looked flawless and was not. The code was read, run against real audio, and corrected. The numbers here come from measurements, not from estimates. It is still an afternoon's worth of code, so take it for what it is.
+
+## Licence
+
+MIT.

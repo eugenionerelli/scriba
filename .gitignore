@@ -1,0 +1,10 @@
+__pycache__/
+*.egg-info/
+.DS_Store
+
+# app build
+macapp/.build/
+macapp/Scriba.app/
+
+# Work reports stay out of the repo: they discuss real recordings.
+reports/
