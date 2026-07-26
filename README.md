@@ -90,6 +90,20 @@ conda create -n scriba python=3.11 -y && conda activate scriba
 pip install git+https://github.com/eugenionerelli/scriba
 ```
 
+That puts the `scriba` command inside the environment, and nowhere else. Leave it there and every use starts with `conda activate scriba`; forget that step and the shell says `command not found`, which is the least informative thing it could say. A launcher on the PATH is worth the thirty seconds:
+
+```bash
+mkdir -p ~/.local/bin
+cat > ~/.local/bin/scriba <<'EOF'
+#!/bin/zsh
+ENV_NAME="${SCRIBA_ENV:-scriba}"
+exec "/opt/homebrew/Caskroom/miniforge/base/envs/${ENV_NAME}/bin/python" -m scriba.cli "$@"
+EOF
+chmod +x ~/.local/bin/scriba
+```
+
+Check that `~/.local/bin` is on your `PATH`, and `scriba` works from any shell.
+
 The pyannote token goes into the Keychain, never into a file:
 
 ```bash

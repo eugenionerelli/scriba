@@ -21,10 +21,15 @@ final class Engine: ObservableObject {
     // MARK: - configuration
 
     /// Where the Python interpreter with scriba installed lives.
+    ///
+    /// The guess is the conda environment holding whisperX 3.8.6 and pyannote 4, the
+    /// combination that puts diarization on Metal. Settings overrides it, and the
+    /// error path names the path it tried, because "nothing happens when I press
+    /// Transcribe" is the least useful thing an app can do.
     static var pythonPath: String {
         get {
             UserDefaults.standard.string(forKey: "pythonPath")
-                ?? "/opt/homebrew/Caskroom/miniforge/base/envs/whisperx/bin/python"
+                ?? "/opt/homebrew/Caskroom/miniforge/base/envs/whisperx4/bin/python"
         }
         set { UserDefaults.standard.set(newValue, forKey: "pythonPath") }
     }
