@@ -148,8 +148,10 @@ On first run, open Settings and point it at the Python of the environment where 
 | Transcription, 8 threads | 601.8s | 443.1s |
 | Load the aligner | 0.5s | 2.8s |
 | Forced alignment, word level | 13.3s | 14.1s |
-| Diarization, pyannote 3.1 on CPU | 372.3s | not measured |
-| **Total** | **16m 37s** | |
+| Diarization, pyannote 3.1 on CPU | 372.3s | 211.0s |
+| Diarization, community-1 on CPU | | 225.9s |
+| Diarization, community-1 on Metal | | **35.7s** |
+| **Total, best of each** | **16m 37s** | **8m 13s** |
 
 The transcription and the diarization are where the time goes, and no setting changes that: it is the library. The job cache exists for this reason, so you pay for it once. Alignment, the stage that sounds expensive, costs 13 seconds.
 
@@ -163,7 +165,7 @@ What helps, in order:
 |---|---|---|
 | `--min-speakers` / `--max-speakers` when you know them | No speed-up. It is the one parameter that moves **correctness** the most | none |
 | `large-v3-turbo` in place of `large-v3` | About twice as fast | loses a little on noisy audio |
-| `scriba settings --set diarize_device=mps` | Diarization is 372s on CPU for 405s of audio, so about 1.1x realtime. MPS is reported at roughly 20x | pyannote has unreliable timestamps on Metal ([#1337](https://github.com/pyannote/pyannote-audio/issues/1337), closed with no fix). The 20x is their figure, not one measured here. Check it against a file whose answer you already know |
+| Metal for the diarization, which is now the default | 226s to 36s, so 6.3x | Verified identical to the CPU output before switching the default: same 165 turns, same labels, every boundary matching to the millisecond. [#1337](https://github.com/pyannote/pyannote-audio/issues/1337) reports wrong timestamps under Metal and was closed with no fix, so it is worth knowing the shape of that failure. If one speaker ever owns the whole recording, set `diarize_device=cpu` and compare |
 
 Things that are not worth it, checked rather than assumed: `mlx-whisper` implements no beam search, so moving to it trades quality away against `beam_size=5`. `lightning-whisper-mlx` and `stable-ts` are both stalled. Apple's `SpeechAnalyzer` API is fast, and it exposes no diarization whatsoever, so it solves half the problem at best.
 
@@ -187,11 +189,14 @@ tools/          stylecheck.py, the writing rules this repo is held to
 
 Comments in the code say **why**, not what. Where there is a magic number or a choice that reads oddly, the reason sits next to it, usually a bug already paid for.
 
-`tools/stylecheck.py` holds the writing rules for this repo, prose and comments alike. Run it before a commit:
+`tools/stylecheck.py` holds the writing rules for this repo, prose and comments alike. Run both checks before a commit:
 
 ```bash
-python tools/stylecheck.py README.md scriba/*.py
+python tools/stylecheck.py README.md scriba/*.py     # the source
+python tools/check-output-style.py                   # what the source produces
 ```
+
+The second one exists because the first is not enough. Every document scriba writes is assembled from string fragments, so each line can pass on its own and the finished file still be wrong. `check-output-style.py` renders all six output formats plus the briefing from stand-in data and checks those instead.
 
 Written in one sitting, paired with Claude, starting from a real problem: a Spanish recording transcribed into Italian that looked flawless and was not. The code was read, run against real audio, and corrected. The numbers here come from measurements, not from estimates. It is still an afternoon's worth of code, so take it for what it is.
 

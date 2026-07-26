@@ -177,7 +177,12 @@ class Job:
                 "  scriba token hf_xxxxxxxx   # stores it in the Keychain\n"
                 "and accept the terms at hf.co/pyannote/speaker-diarization-3.1"
             )
-        self.report("diarization: pyannote 3.1, with voice print extraction")
+        # Naming the model and the device on every run is deliberate. Which of the two
+        # models is in use depends on the installed pyannote, and Metal is picked
+        # automatically. Both belong in the log rather than in someone's memory.
+        dev = diarize._pick_device(self.s.diarize_device)
+        self.report(f"diarization: {diarize.DIARIZATION_MODEL.split('/')[-1]} "
+                    f"on {dev}, with voice print extraction")
         dia = diarize.run(
             self.wav, hf_token=token,
             min_speakers=self.s.min_speakers, max_speakers=self.s.max_speakers,

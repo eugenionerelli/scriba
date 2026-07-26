@@ -104,20 +104,13 @@ def run(
     hf_token: str | None,
     min_speakers: int | None = None,
     max_speakers: int | None = None,
-    device: str = "cpu",
+    device: str = "auto",
 ) -> Diarization:
     import torch
     import torchaudio
     from pyannote.audio import Pipeline
 
-    if device == "mps":
-        # On the M4 diarization goes from ~1.5x to ~20x realtime. But pyannote has a
-        # report opened and closed as "wontfix" about wrong timestamps under MPS
-        # (pyannote-audio#1337), including cases where the whole audio ends up on a
-        # single speaker. So it stays an explicit choice, never the default, and it
-        # has to be checked against a file whose right answer you already know.
-        print("[scriba] diarization on MPS is fast. The timestamps are not guaranteed "
-              "(pyannote-audio#1337), so check the result before you trust it.")
+    device = _pick_device(device)
 
     # The keyword changed name between pyannote 3 and 4. Try the current one, fall
     # back to the old one, so the same code runs against either installed version.
@@ -172,6 +165,27 @@ def run(
 
     return Diarization(turns=turns, embeddings=embeddings,
                        exclusive_turns=exclusive_turns)
+
+
+def _pick_device(requested: str) -> str:
+    """Resolve "auto" into a real device, and refuse to fail quietly.
+
+    Asking for Metal on a machine without it used to be an error thrown from deep
+    inside torch. Here it falls back to the CPU and says so, because a diarization
+    that runs slowly is a nuisance and one that does not run at all costs the whole
+    job.
+    """
+    if requested not in ("auto", "mps"):
+        return requested
+    try:
+        import torch
+        if torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    if requested == "mps":
+        print("[scriba] Metal was asked for and this machine has none. Using the CPU.")
+    return "cpu"
 
 
 def _returns_dataclass(pipeline) -> bool:

@@ -88,10 +88,20 @@ class Settings:
     diarize: bool = True
     min_speakers: int | None = None
     max_speakers: int | None = None
-    # "cpu" or "mps". MPS runs about 12x faster, and pays for it with timestamps
-    # pyannote itself does not stand behind on Metal (pyannote-audio#1337, closed
-    # with no fix). "cpu" here is a deliberate choice, not an oversight.
-    diarize_device: str = "cpu"
+    # "auto", "mps" or "cpu". "auto" picks Metal when the machine has it.
+    #
+    # Metal was off by default here for a while, on the strength of
+    # pyannote-audio#1337, which reports wrong timestamps under MPS and was closed
+    # with no fix. Measured instead of assumed, on pyannote 4.0.7 with
+    # community-1 on an M4: 36s against 226s, and the two outputs are identical.
+    # Same 165 turns, same labels, and every start and end matching to the
+    # millisecond. The report does not reproduce on this combination.
+    #
+    # One file on one machine is not proof for every machine, so `cpu` stays
+    # reachable, and the engine says which device it used on every run. If a
+    # transcript ever comes out with one speaker owning the whole recording, that
+    # is the shape #1337 describes: set this to "cpu" and compare.
+    diarize_device: str = "auto"
 
     # Voice matching. These thresholds are not gospel, they are a starting point to
     # calibrate on YOUR recordings. The honest way to do it: annotate three or four
