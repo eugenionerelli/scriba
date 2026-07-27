@@ -134,7 +134,14 @@ scriba name meeting.m4a SPEAKER_00=Ada SPEAKER_01=Rafiq
 
 scriba voices list                    # who is on file
 scriba watch ~/Memos                  # transcribes every audio file that lands there
+scriba jobs list                      # what has been processed, and how far it got
 ```
+
+`jobs list` exists because the job folder is not somewhere anybody browses. The names
+are slugs with a hash on the end, and "did I ever transcribe that one" otherwise has
+no answer short of opening files. It also shows what the disk is holding: each job
+keeps a full 16 kHz copy of the audio, about 2 MB a minute, which `jobs prune --audio`
+gives back. Transcripts and voice prints cost CPU to make and are never touched by it.
 
 ### Finding your own voice
 

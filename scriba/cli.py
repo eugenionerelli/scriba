@@ -312,6 +312,89 @@ def voices_rename(old: str, new: str):
         console.print(f"[yellow]Not found: {old}[/yellow]")
 
 
+jobs_app = typer.Typer(help="What scriba has processed, and what it is keeping.")
+app.add_typer(jobs_app, name="jobs")
+
+
+@jobs_app.command("list")
+def jobs_list(
+    full: bool = typer.Option(False, "--full", help="Show disk use per job"),
+):
+    """Every recording scriba has touched, and how far it got.
+
+    Worth having because the job folder is not something anybody browses: the names
+    are slugs with a hash on the end, and "did I ever transcribe that one" is a
+    question with no other way to answer it.
+    """
+    from .jobs import inventory
+
+    rows = inventory()
+    if not rows:
+        console.print("Nothing processed yet.")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    for col in ("recording", "recorded", "length", "state", "speakers"):
+        table.add_column(col)
+    if full:
+        table.add_column("on disk")
+
+    for r in rows:
+        cells = [
+            r.source_name,
+            r.recorded or "-",
+            f"{r.duration / 60:.0f} min" if r.duration else "-",
+            r.state,
+            ", ".join(r.names.values()) if r.names else (str(r.speakers) if r.speakers else "-"),
+        ]
+        if full:
+            cells.append(f"{r.size_mb:.0f} MB")
+        table.add_row(*cells)
+    console.print(table)
+
+    total = sum(r.size_mb for r in rows)
+    audio = sum(r.audio_mb for r in rows)
+    console.print(f"\n{len(rows)} jobs, {total:.0f} MB, of which {audio:.0f} MB is "
+                  f"prepared audio that can be rebuilt from the source.")
+
+
+@jobs_app.command("prune")
+def jobs_prune(
+    audio: bool = typer.Option(False, "--audio", help="Delete the prepared 16 kHz audio"),
+    empty: bool = typer.Option(False, "--empty", help="Delete jobs that produced nothing"),
+    yes: bool = typer.Option(False, "--yes", help="Do it without asking"),
+):
+    """Reclaim space. Nothing that took CPU to produce is ever deleted here.
+
+    `--audio` drops the prepared WAV, which is the bulk of it and is rebuilt from the
+    source in seconds. Transcripts, diarization and voice prints stay.
+
+    `--empty` drops jobs that never produced an output, which is what a failed or
+    interrupted run leaves behind.
+    """
+    from .jobs import inventory, prune
+
+    rows = inventory()
+    targets = prune(rows, audio=audio, empty=empty, dry_run=True)
+    if not targets:
+        console.print("Nothing to remove.")
+        return
+
+    freed = sum(mb for _, mb in targets)
+    console.print(f"About to remove {len(targets)} items, freeing {freed:.0f} MB:")
+    for path, mb in targets[:12]:
+        console.print(f"  {path.name}  {mb:.0f} MB", style="dim",
+                      markup=False, highlight=False)
+    if len(targets) > 12:
+        console.print(f"  and {len(targets) - 12} more", style="dim")
+
+    if not yes and not typer.confirm("Go ahead?"):
+        console.print("Left alone.")
+        return
+    prune(rows, audio=audio, empty=empty, dry_run=False)
+    console.print(f"[green]Freed {freed:.0f} MB.[/green]")
+
+
 @app.command()
 def token(value: str = typer.Argument(None, help="Hugging Face token (hf_...)")):
     """Save the pyannote token in the Keychain (never in plain text in a file)."""
