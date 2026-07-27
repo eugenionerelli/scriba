@@ -136,6 +136,41 @@ scriba voices list                    # who is on file
 scriba watch ~/Memos                  # transcribes every audio file that lands there
 ```
 
+### Finding your own voice
+
+Most of your own recordings have you in them, and that fact does two jobs at once.
+
+```bash
+scriba whoami ~/Recordings
+```
+
+This diarizes every recording in the folder and never transcribes any of them, which
+is what makes it practical: working out who is present needs embeddings, not words,
+and on Metal that runs at about a tenth of realtime. Hours of audio take minutes.
+
+It then compares speakers **across** recordings, ignoring pairs from inside the same
+one. Two people in the same room were separated by the diarizer because they sound
+different, so those pairs say nothing about whether one person sounds like themselves
+on another day, which is the question that matters here.
+
+The voice present in the most recordings is whoever owns the microphone. You get told
+which one that is, with a timestamp in each recording to listen to, and nothing is
+written until you confirm:
+
+```bash
+scriba whoami ~/Recordings --name "Your name"
+```
+
+That enrolls every print of that voice at once, from different days and different
+rooms, which is what makes later matching hold up. A registry built from one
+recording only ever proves that a file matches itself.
+
+The same scan answers the calibration question. Every threshold in `voices.py` came
+from a briefing, and the honest way to set them is to compare two recordings of the
+same person made on different days. A corpus contains hundreds of those comparisons
+already. `whoami` prints where the two populations separate in your own material, so
+the number is measured rather than assumed.
+
 Every stage is cached under `~/.scriba/jobs/<name>/`, so redoing just the names re-transcribes nothing. Pass `--force asr|diar|lang|all` to rerun the stage you want.
 
 ## The app

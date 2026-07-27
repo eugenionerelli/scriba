@@ -147,6 +147,101 @@ def watch(
 
 
 @app.command()
+def whoami(
+    folder: Path = typer.Argument(..., help="Folder of recordings to scan"),
+    name: str = typer.Option(None, "--name", "-n",
+                             help="Enroll the recurring voice under this name"),
+    min_speech: float = typer.Option(20.0, "--min-speech",
+                                     help="Ignore speakers with less speech than this"),
+    include_video: bool = typer.Option(False, "--include-video",
+                                       help="Also scan video files, not just voice recordings"),
+):
+    """Find the voice that recurs across your recordings, and calibrate on it.
+
+    Most of your own recordings have you in them. The voice present in the most of
+    them is you, and nobody has to label anything for that to work.
+
+    Only diarization runs, never transcription, so scanning hours of audio takes
+    minutes. Recordings already processed are read from the cache.
+    """
+    from . import recurring
+
+    s = Settings.load()
+    samples = recurring.scan(folder, s, min_speech=min_speech,
+                             include_video=include_video,
+                             report=lambda m: console.print(m, style="dim",
+                                                            markup=False, highlight=False))
+    if len(samples) < 2:
+        console.print("[red]Not enough speakers found to compare.[/red]")
+        raise typer.Exit(1)
+
+    sims = recurring.cross_file_similarities(samples)
+    cut, note = recurring.suggest_threshold(sims)
+
+    console.print(f"\n[bold]{len(samples)} speakers across {len({x.file for x in samples})} "
+                  f"recordings, {len(sims)} cross-recording comparisons[/bold]")
+    console.print(f"  similarity: lowest {sims[0]:.3f}, median {sims[len(sims)//2]:.3f}, "
+                  f"highest {sims[-1]:.3f}")
+    if cut:
+        console.print(f"  suggested threshold: [bold]{cut:.2f}[/bold]  ({note})")
+        console.print(f"  currently set to {s.voice_match_threshold:.2f}")
+    else:
+        console.print(f"  {note}")
+
+    threshold = cut or s.voice_match_threshold
+    try:
+        groups = recurring.cluster(samples, threshold)
+    except ValueError as exc:
+        console.print(f"\n[yellow]Cannot group these voices: {exc}[/yellow]")
+        console.print("Either no voice recurs across these recordings, or they were "
+                      "made in conditions too different to link up.")
+        raise typer.Exit(0)
+    top = groups[0] if groups else None
+    if top is None or len(top.files) < 2:
+        console.print("\n[yellow]No voice appears in more than one recording.[/yellow]")
+        raise typer.Exit(0)
+
+    table = Table(show_header=True, header_style="bold")
+    for col in ("voice", "recordings", "speech", "listen to"):
+        table.add_column(col)
+    for i, g in enumerate(groups[:5], 1):
+        if len(g.files) < 2:
+            continue
+        best = max(g.samples, key=lambda x: x.speech_seconds)
+        table.add_row(
+            f"{i}" + ("  (most recurring)" if i == 1 else ""),
+            str(len(g.files)),
+            f"{g.speech_seconds / 60:.0f} min",
+            f"{best.file.name} at {int(best.longest_start // 60)}:"
+            f"{int(best.longest_start % 60):02d}",
+        )
+    console.print(table)
+
+    console.print(f"\nThe most recurring voice is in [bold]{len(top.files)} of "
+                  f"{len({x.file for x in samples})}[/bold] recordings.")
+    for sample in sorted(top.samples, key=lambda x: -x.speech_seconds)[:6]:
+        console.print(f"  {sample.file.name}  {sample.label}  "
+                      f"{sample.speech_seconds / 60:.0f} min  "
+                      f"listen at {int(sample.longest_start // 60)}:"
+                      f"{int(sample.longest_start % 60):02d}",
+                      style="dim", markup=False, highlight=False)
+
+    if not name:
+        console.print("\nListen to a couple of those, and if that voice is you:")
+        console.print(f'  [bold]scriba whoami "{folder}" --name "Your name"[/bold]')
+        return
+
+    reg = VoiceRegistry()
+    added = 0
+    for sample in top.samples:
+        reg.enroll(name, sample.embedding, source=sample.file.name)
+        added += 1
+    reg.save()
+    console.print(f"\n[green]Enrolled {name}[/green] from {added} recordings. "
+                  "Prints from different days and rooms are what make the matching hold up.")
+
+
+@app.command()
 def info(file: Path):
     """Job status as JSON. This is the channel the macOS app talks through."""
     job = Job(file)
