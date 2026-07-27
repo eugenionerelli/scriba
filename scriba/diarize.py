@@ -302,15 +302,21 @@ def to_turns(segments: list[dict], *, max_gap: float = 2.0) -> list[dict]:
         if not text:
             continue
         spk = seg.get("speaker")
+        conf = float(seg.get("speaker_confidence", 1.0))
         if turns and turns[-1]["speaker"] == spk and \
                 float(seg.get("start", 0)) - turns[-1]["end"] <= max_gap:
             turns[-1]["text"] += " " + text
             turns[-1]["end"] = float(seg.get("end", turns[-1]["end"]))
+            # The weakest segment sets the confidence for the merged turn. Averaging
+            # would let one solid minute bury the doubtful sentence inside it, and the
+            # doubtful sentence is the whole reason for carrying the number.
+            turns[-1]["confidence"] = min(turns[-1]["confidence"], conf)
         else:
             turns.append({
                 "speaker": spk,
                 "start": float(seg.get("start", 0.0)),
                 "end": float(seg.get("end", 0.0)),
                 "text": text,
+                "confidence": conf,
             })
     return turns

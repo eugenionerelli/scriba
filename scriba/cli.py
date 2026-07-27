@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import asdict
+from enum import Enum
 from pathlib import Path
 
 import typer
@@ -19,6 +20,19 @@ app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="From voice memo to NotebookLM source: transcribes, separates the "
                        "voices, learns who is who.")
 console = Console()
+
+
+class Stage(str, Enum):
+    """Stages `--force` can redo.
+
+    An Enum rather than a string so typer rejects a typo. `--force asrr` used to
+    exit 0 having forced nothing: the run reused every cached stage and looked
+    exactly like a successful re-run.
+    """
+    all = "all"
+    lang = "lang"
+    asr = "asr"
+    diar = "diar"
 
 
 def _settings(language: str | None, model: str | None, min_s: int | None,
@@ -46,15 +60,20 @@ def run(
     min_speakers: int = typer.Option(None, "--min-speakers"),
     max_speakers: int = typer.Option(None, "--max-speakers"),
     no_diarize: bool = typer.Option(False, "--no-diarize", help="Transcription only"),
-    force: str = typer.Option(None, "--force",
-                              help="all | lang | asr | diar: redo one stage, ignoring the cache"),
+    force: Stage = typer.Option(None, "--force", case_sensitive=False,
+                                help="redo one stage, ignoring the cache"),
 ):
     """Transcribe and diarize one or more files."""
     s = _settings(language, model, min_speakers, max_speakers, no_diarize)
     for f in files:
         console.rule(f"[bold]{f.name}")
-        job = Job(f, s, report=lambda m: console.print(f"  [dim]{m}[/dim]"))
-        res = job.run(force=force)
+        # markup=False: the engine writes notes like "[bilingual, check by hand]" and
+        # Rich reads square brackets as a style tag, so the note vanished and left
+        # a bare warning symbol. The language warning is the project's main safety
+        # net, and it was the one line that never reached the screen.
+        job = Job(f, s, report=lambda m: console.print(f"  {m}", style="dim",
+                                                      markup=False, highlight=False))
+        res = job.run(force=force.value if force else None)
 
         table = Table(show_header=True, header_style="bold")
         table.add_column("voice")
@@ -92,7 +111,24 @@ def name(
         k, v = a.split("=", 1)
         mapping[k.strip()] = v.strip()
 
-    job = Job(file, report=lambda m: console.print(f"  [dim]{m}[/dim]"))
+    job = Job(file, report=lambda m: console.print(f"  {m}", style="dim",
+                                                  markup=False, highlight=False))
+
+    # Check the labels against the ones this job actually has. Getting a label wrong
+    # used to write the pair into the job state, report "0 voice prints enrolled. On
+    # the next recording these names attach on their own", print Done in green and
+    # exit 0. Every part of that was false.
+    known = job.speaker_labels()
+    if known:
+        unknown = [k for k in mapping if k not in known]
+        if unknown:
+            console.print(f"[red]This recording has no {', '.join(unknown)}.[/red]")
+            console.print(f"Voices found: {', '.join(sorted(known))}")
+            raise typer.Exit(1)
+    else:
+        console.print("[red]This file has not been diarized yet. Run `scriba run` first.[/red]")
+        raise typer.Exit(1)
+
     res = job.set_names(mapping, enroll=not no_enroll)
     console.print(f"\n[green]Done.[/green] {res.job_dir / 'output'}")
 
@@ -106,7 +142,8 @@ def watch(
     """Watch a folder: every audio file that lands there is transcribed on its own."""
     from .watch import watch as _watch
     s = _settings(language, None, None, max_speakers, False)
-    _watch(folder, s, report=lambda m: console.print(f"[dim]{m}[/dim]"))
+    _watch(folder, s, report=lambda m: console.print(m, style="dim",
+                                                    markup=False, highlight=False))
 
 
 @app.command()
@@ -134,7 +171,7 @@ def dossier(file: Path):
     if not path.exists():
         console.print("[red]No briefing yet: run `scriba run` first.[/red]")
         raise typer.Exit(1)
-    console.print(path.read_text())
+    console.print(path.read_text(), markup=False, highlight=False)
 
 
 voices_app = typer.Typer(help="The voice print registry.")
@@ -224,10 +261,36 @@ def settings(
 
 
 def main() -> None:
+    """Run the app, and turn the failures we expect into one readable line.
+
+    Without this, each of these arrives as a forty-line rich traceback with the
+    useful sentence somewhere in the middle. The missing-token message especially
+    is written to tell you exactly which command to run, and it was landing at the
+    bottom of a decorated stack dump where nobody would read it.
+
+    Anything not listed here still raises with its traceback, which is right for a
+    bug: an unexpected failure should look unexpected.
+    """
     try:
         app()
     except KeyboardInterrupt:
+        console.print("\n[yellow]Stopped.[/yellow] Finished stages stay cached.")
         sys.exit(130)
+    except FileNotFoundError as exc:
+        console.print(f"[red]File not found:[/red] {exc.filename or exc}")
+        sys.exit(1)
+    except json.JSONDecodeError as exc:
+        console.print(f"[red]A cached file is corrupted:[/red] {exc}")
+        console.print("Delete that job folder under ~/.scriba/jobs and run it again.")
+        sys.exit(1)
+    except ValueError as exc:
+        console.print(str(exc), style="red", markup=False, highlight=False)
+        sys.exit(1)
+    except RuntimeError as exc:
+        # The engine raises RuntimeError for failures it can explain, with the
+        # explanation already written. Print it and get out of the way.
+        console.print(str(exc), style="red", markup=False, highlight=False)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

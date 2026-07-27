@@ -24,6 +24,18 @@ from .voices import VoiceRegistry
 
 Reporter = Callable[[str], None]
 
+
+def write_atomic(path: Path, text: str) -> None:
+    """Write through a scratch file and rename.
+
+    A job interrupted between opening a file and finishing it leaves a truncated
+    JSON that the next run fails to parse, or worse, parses into something plausible.
+    The rename is atomic, so a reader sees the old file or the new one.
+    """
+    tmp = path.with_suffix(path.suffix + ".part")
+    tmp.write_text(text)
+    tmp.replace(path)
+
 # Machine-readable error markers.
 #
 # The macOS app has to tell "you never configured a token" apart from any other
@@ -90,8 +102,76 @@ class Job:
 
     # ------------------------------------------------------------------ util
     def _save_state(self) -> None:
-        self.state_path.write_text(json.dumps(self.state, indent=2, ensure_ascii=False,
-                                              default=str))
+        write_atomic(self.state_path,
+                     json.dumps(self.state, indent=2, ensure_ascii=False, default=str))
+
+    # ------------------------------------------------------- cache validity
+    #
+    # Every stage here caches to disk, and until now nothing checked that the cache
+    # still described the file in front of it. Three ways that went wrong, all of
+    # them producing a finished document that looked right:
+    #
+    #   Record over a memo, keep the name. The job folder is keyed on the path, so
+    #   the second run said "reusing the cache" and wrote out the first recording's
+    #   words under the second recording's date.
+    #
+    #   Change the model, the language, the hotwords. Nothing re-ran, because the
+    #   cached transcript carried no record of what produced it.
+    #
+    #   Ask the app to redo a job in a different language. The state flipped, the
+    #   text did not, and the header then announced a language the words were not in.
+    #
+    # Both fingerprints below are cheap and are checked on every run.
+
+    def _source_fingerprint(self) -> str:
+        """Identifies the source audio well enough to notice it was replaced.
+
+        Size and modification time, not a content hash: hashing a 200 MB file on
+        every run to catch a rare mistake is the wrong trade. This misses an edit
+        that preserves both, which no recording app does.
+        """
+        st = self.source.stat()
+        return f"{st.st_size}:{st.st_mtime_ns}"
+
+    def _asr_fingerprint(self) -> str:
+        """The settings that decide what the transcript says."""
+        s = self.s
+        payload = {
+            "model": s.model, "compute_type": s.compute_type,
+            "language": self.state.get("language", s.language),
+            "beam_size": s.beam_size, "align": s.align,
+            "vad_onset": s.vad_onset, "vad_offset": s.vad_offset,
+            "initial_prompt": s.initial_prompt, "hotwords": sorted(s.hotwords),
+            "temperature_fallback": s.temperature_fallback,
+            "condition_on_previous_text": s.condition_on_previous_text,
+        }
+        return hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:12]
+
+    def _diar_fingerprint(self) -> str:
+        from . import diarize as _d
+        payload = {"model": _d.DIARIZATION_MODEL,
+                   "min": self.s.min_speakers, "max": self.s.max_speakers}
+        return hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:12]
+
+    def _drop_stale_cache(self) -> None:
+        """If the source changed, everything derived from it is wrong. Say so, then go."""
+        current = self._source_fingerprint()
+        recorded = self.state.get("source_fingerprint")
+        if recorded is None or recorded == current:
+            self.state["source_fingerprint"] = current
+            return
+
+        self.report("the source file changed since this job was last run, "
+                    "so the cached transcript belongs to different audio. Redoing it.")
+        for name in ("audio16k.wav", "transcript.json", "diarization.json",
+                     "embeddings.npz", "turns.json"):
+            (self.dir / name).unlink(missing_ok=True)
+        for stale in ("language", "language_note", "language_confidence",
+                      "language_samples", "word_level", "duration",
+                      "asr_fingerprint", "diar_fingerprint"):
+            self.state.pop(stale, None)
+        self.state["source_fingerprint"] = current
+        self._save_state()
 
     def _cache(self, key: str, path: Path, produce: Callable[[], Any],
                load: Callable[[Path], Any], dump: Callable[[Any, Path], None],
@@ -105,15 +185,43 @@ class Job:
 
     # ---------------------------------------------------------------- phases
     def prepare_audio(self, *, force: bool = False) -> Path:
+        info = audio.probe(self.source)
+
+        # A video with no audio track is a plausible mistake, and ffmpeg reports it as
+        # "Error opening output files: Invalid argument", which says nothing about the
+        # actual problem.
+        if info.sample_rate == 0 and info.channels == 0:
+            raise RuntimeError(f"{self.source.name} has no audio track.")
+        if info.duration <= 0:
+            raise RuntimeError(f"{self.source.name} contains no audio.")
+
         if self.wav.exists() and not force:
-            self.report("audio: already prepared")
-            return self.wav
+            # A WAV from a run that was interrupted opens and decodes like any other,
+            # it is simply shorter. Comparing it against the source is the only way to
+            # tell, and everything downstream believes whatever this file says.
+            cached = audio.probe(self.wav).duration
+            if info.duration > 0 and abs(cached - info.duration) > info.duration * 0.01:
+                self.report(f"audio: the prepared copy is {cached:.0f}s against "
+                            f"{info.duration:.0f}s of source, so it is a leftover from "
+                            "an interrupted run. Converting again.")
+                force = True
+            else:
+                self.report("audio: already prepared")
+                return self.wav
+
         self.report("audio: converting to 16 kHz mono WAV, normalizing the level")
         audio.prepare(self.source, self.wav)
-        info = audio.probe(self.source)
+
+        when, when_source = audio.recorded_at(info)
         self.state["duration"] = info.duration
         self.state["source"] = str(self.source)
         self.state["codec"] = info.codec
+        self.state["recorded"] = when.isoformat() if when else None
+        self.state["recorded_source"] = when_source
+        if info.memo_uuid:
+            self.state["memo_uuid"] = info.memo_uuid
+        if info.device:
+            self.state["device"] = info.device
         self._save_state()
         return self.wav
 
@@ -141,26 +249,37 @@ class Job:
 
     def transcribe(self, *, force: bool = False) -> list[dict]:
         path = self.dir / "transcript.json"
-        if path.exists() and not force:
+        want = self._asr_fingerprint()
+        if path.exists() and not force and self.state.get("asr_fingerprint") == want:
             self.report("transcription: reusing the cache")
             data = json.loads(path.read_text())
             self.state["word_level"] = data.get("word_level", False)
             return data["segments"]
+        if path.exists() and not force:
+            self.report("transcription: the settings changed since the cached run, "
+                        "transcribing again")
 
         s = Settings(**{**asdict(self.s), "language": self.state.get("language", self.s.language)})
         self.report(f"transcription: {s.model} in {s.language} (CPU, {s.compute_type})")
         t = asr.transcribe(self.wav, s)
-        path.write_text(json.dumps(
+        write_atomic(path, json.dumps(
             {"segments": t.segments, "language": t.language, "word_level": t.word_level},
             ensure_ascii=False,
         ))
         self.state["word_level"] = t.word_level
+        self.state["asr_fingerprint"] = want
         self._save_state()
         return t.segments
 
     def diarize(self, *, force: bool = False) -> diarize.Diarization:
         turns_path = self.dir / "diarization.json"
         emb_path = self.dir / "embeddings.npz"
+        want = self._diar_fingerprint()
+        if (turns_path.exists() and emb_path.exists() and not force
+                and self.state.get("diar_fingerprint") != want):
+            self.report("diarization: the model or the speaker count changed, "
+                        "diarizing again")
+            force = True
         if turns_path.exists() and emb_path.exists() and not force:
             self.report("diarization: reusing the cache")
             raw = json.loads(turns_path.read_text())
@@ -188,8 +307,10 @@ class Job:
             min_speakers=self.s.min_speakers, max_speakers=self.s.max_speakers,
             device=self.s.diarize_device,
         )
-        turns_path.write_text(json.dumps([asdict(t) for t in dia.turns], ensure_ascii=False))
+        write_atomic(turns_path, json.dumps([asdict(t) for t in dia.turns], ensure_ascii=False))
         np.savez(emb_path, **dia.embeddings)
+        self.state["diar_fingerprint"] = want
+        self._save_state()
         self.report(f"diarization: {len(dia.speakers())} distinct voices, "
                     f"{len(dia.embeddings)} usable voice prints")
         return dia
@@ -230,6 +351,7 @@ class Job:
     # ------------------------------------------------------------------- run
     def run(self, *, force: str | None = None) -> JobResult:
         f_all = force == "all"
+        self._drop_stale_cache()
         self.prepare_audio(force=f_all)
         self.detect_language(force=f_all or force == "lang")
         segments = self.transcribe(force=f_all or force == "asr")
@@ -243,7 +365,8 @@ class Job:
             matches = self.identify(dia)
 
         turns = diarize.to_turns(segments)
-        (self.dir / "turns.json").write_text(json.dumps(turns, ensure_ascii=False, indent=1))
+        write_atomic(self.dir / "turns.json",
+                     json.dumps(turns, ensure_ascii=False, indent=1))
 
         language = self.state.get("language", "it")
         speech = dia.speech_time() if dia else {}
@@ -263,12 +386,25 @@ class Job:
         unresolved = [export.display(p.label, names) for p in profiles
                       if p.label not in names]
 
+        recorded = None
+        if self.state.get("recorded"):
+            try:
+                recorded = datetime.fromisoformat(self.state["recorded"])
+            except ValueError:
+                recorded = None
+
         meta = {
-            "title": self.source.stem,
-            "recorded": datetime.fromtimestamp(self.source.stat().st_mtime),
+            "title": self.state.get("title") or self.source.stem,
+            "recorded": recorded,
+            # Where the date came from travels with it. "recorded" is the timestamp
+            # the recorder wrote; anything else is the filesystem's opinion, and for
+            # an exported voice memo the filesystem thinks the conversation happened
+            # at the moment it was copied.
+            "recorded_source": self.state.get("recorded_source", ""),
             "duration": self.state.get("duration", 0.0),
             "language": language,
             "source_file": self.source.name,
+            "device": self.state.get("device", ""),
             "speaker_stats": speech,
             "unresolved": unresolved,
         }
@@ -285,6 +421,19 @@ class Job:
             unresolved=unresolved, dossier_path=dossier_path,
             duration=self.state.get("duration", 0.0),
         )
+
+    def speaker_labels(self) -> set[str]:
+        """The speaker labels this job actually produced, read from the embeddings.
+
+        Used to reject a name for a speaker that does not exist. Without this, a typo
+        in the label was stored in the job state, reported as a successful enrollment,
+        and exited zero.
+        """
+        emb = self.dir / "embeddings.npz"
+        if not emb.exists():
+            return set()
+        with np.load(emb) as data:
+            return set(data.files)
 
     # ---------------------------------------------------------------- rename
     def set_names(self, mapping: dict[str, str], *, enroll: bool = True) -> JobResult:

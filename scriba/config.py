@@ -18,6 +18,10 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 
 KEYCHAIN_SERVICE = "scriba-hf-token"
 
+# The output formats export.write_all knows how to write. Anything else in
+# output_formats is a typo that would silently produce one file fewer.
+KNOWN_FORMATS = {"notebooklm", "md", "txt", "srt", "vtt", "json"}
+
 
 # --------------------------------------------------------------------------- #
 # Hugging Face token: Keychain > env > legacy file
@@ -120,15 +124,69 @@ class Settings:
     )
     timestamp_every: int = 0                 # 0 = timestamp on every turn
 
+    def validate(self) -> None:
+        """Reject values that would break something later, quietly and permanently.
+
+        Every check here stands for a way the tool used to accept nonsense and then
+        misbehave a long way from the cause. A threshold of 5 is silently stored, and
+        from then on the voice registry never matches anyone again, with no error to
+        connect the two. `output_formats` given as a string makes write_all iterate
+        over its characters and produce no files at all, after the eight minutes of
+        transcription have already been spent. A non-numeric speaker count crashes
+        inside pyannote, again after the transcription.
+        """
+        problems: list[str] = []
+
+        for field_name in ("voice_match_threshold", "voice_suggest_threshold",
+                           "voice_match_margin"):
+            v = getattr(self, field_name)
+            if not isinstance(v, (int, float)) or not -1.0 <= float(v) <= 1.0:
+                problems.append(f"{field_name}={v!r}: cosine similarity lives in [-1, 1]")
+        if self.voice_suggest_threshold > self.voice_match_threshold:
+            problems.append(
+                f"voice_suggest_threshold ({self.voice_suggest_threshold}) is above "
+                f"voice_match_threshold ({self.voice_match_threshold}), so the zone "
+                "that suggests a name sits above the zone that applies one")
+
+        for field_name in ("min_speakers", "max_speakers"):
+            v = getattr(self, field_name)
+            if v is not None and (not isinstance(v, int) or v < 1):
+                problems.append(f"{field_name}={v!r}: a speaker count is a whole number, 1 or more")
+        if (self.min_speakers and self.max_speakers
+                and self.min_speakers > self.max_speakers):
+            problems.append(f"min_speakers ({self.min_speakers}) is above "
+                            f"max_speakers ({self.max_speakers})")
+
+        if not isinstance(self.output_formats, list) or not self.output_formats:
+            problems.append(f"output_formats={self.output_formats!r}: expected a list of names")
+        else:
+            unknown = [f for f in self.output_formats if f not in KNOWN_FORMATS]
+            if unknown:
+                problems.append(f"output_formats: {', '.join(unknown)} "
+                                f"(known: {', '.join(sorted(KNOWN_FORMATS))})")
+
+        if not isinstance(self.hotwords, list):
+            problems.append(f"hotwords={self.hotwords!r}: expected a list of words")
+        if self.diarize_device not in ("auto", "cpu", "mps"):
+            problems.append(f"diarize_device={self.diarize_device!r}: expected auto, cpu or mps")
+        if self.voice_min_speech_sec < 0:
+            problems.append(f"voice_min_speech_sec={self.voice_min_speech_sec}: cannot be negative")
+
+        if problems:
+            raise ValueError("settings out of range:\n  " + "\n  ".join(problems))
+
     @classmethod
     def load(cls) -> "Settings":
         if SETTINGS_PATH.exists():
             raw = json.loads(SETTINGS_PATH.read_text())
             known = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
-            return cls(**known)
+            s = cls(**known)
+            s.validate()
+            return s
         return cls()
 
     def save(self) -> None:
+        self.validate()
         ensure_dirs()
         SETTINGS_PATH.write_text(json.dumps(asdict(self), indent=2, ensure_ascii=False))
 

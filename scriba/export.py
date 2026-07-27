@@ -69,6 +69,9 @@ def notebooklm(
     source_file: str = "",
     speaker_stats: dict[str, float] | None = None,
     unresolved: list[str] | None = None,
+    recorded_source: str = "",
+    device: str = "",
+    uncertain_below: float = 0.8,
 ) -> str:
     names = names or {}
     lines: list[str] = []
@@ -78,11 +81,21 @@ def notebooklm(
     lines.append("## Overview")
     lines.append("")
     if recorded:
-        lines.append(f"- **Date**: {recorded.strftime('%Y-%m-%d %H:%M')}")
+        stamp = recorded.strftime("%Y-%m-%d %H:%M")
+        # Say where the date came from. Only "recorded" is the time the recorder
+        # wrote down; the others are the filesystem's guess, and an exported voice
+        # memo carries the timestamp of the export rather than of the conversation.
+        if recorded_source and recorded_source != "recorded":
+            lines.append(f"- **Date**: {stamp} (from the file's {recorded_source} "
+                         "time, which may not be when the conversation happened)")
+        else:
+            lines.append(f"- **Date**: {stamp}")
     lines.append(f"- **Duration**: {hhmmss(duration, always_hours=True)}")
     lines.append(f"- **Language**: {language}")
     if source_file:
         lines.append(f"- **Source file**: {source_file}")
+    if device:
+        lines.append(f"- **Recorded with**: {device}")
 
     partecipanti = []
     for spk in sorted({t["speaker"] for t in turns if t.get("speaker")}):
@@ -105,6 +118,19 @@ def notebooklm(
             f"{'Their names are' if plurale else 'Their name is'} never spoken in "
             "the recording. Do not guess who they are."
         )
+    shaky = [t for t in turns if float(t.get("confidence", 1.0)) < uncertain_below]
+    if shaky:
+        lines.append(
+            f"- **Attribution**: {len(shaky)} of {len(turns)} turns are marked "
+            "*(uncertain)*. The words are transcribed; which of the speakers said "
+            "them is a guess, usually where two people talk over each other. Do not "
+            "attribute a quote from those turns to a named person."
+        )
+    lines.append(
+        "- **Note**: this is automatic speech recognition. Figures, dates and proper "
+        "names are the parts it gets wrong most often, and they are worth checking "
+        "against the audio before relying on them."
+    )
     lines.append("")
     lines.append("## Transcript")
     lines.append("")
@@ -113,10 +139,31 @@ def notebooklm(
     for t in turns:
         nome = display(t.get("speaker"), names)
         stamp = hhmmss(t["start"])
+        # Repeat the caveat on the line itself. The header says which voices went
+        # unidentified, and by the middle of a long document that header is far away.
+        # A model quoting a line reads the line, not the preamble.
+        if t.get("speaker") and t["speaker"] not in names:
+            nome = f"{nome} (unidentified)"
+        if float(t.get("confidence", 1.0)) < uncertain_below:
+            nome = f"{nome} (uncertain)"
         if nome != last_speaker:
             lines.append("")
         lines.append(f"**{nome}** [{stamp}]: {t['text'].strip()}")
         last_speaker = nome
+
+    if shaky:
+        lines.append("")
+        lines.append("## Turns to check")
+        lines.append("")
+        lines.append("Speaker attribution is weakest here. The timestamps are for "
+                     "going back to the audio.")
+        lines.append("")
+        for t in shaky:
+            who = display(t.get("speaker"), names)
+            snippet = t["text"].strip()
+            if len(snippet) > 90:
+                snippet = snippet[:90].rstrip() + "…"
+            lines.append(f"- [{hhmmss(t['start'])}] {who}: {snippet}")
 
     lines.append("")
     return "\n".join(lines).replace("\n\n\n", "\n\n")
@@ -214,6 +261,8 @@ def write_all(
                 source_file=meta.get("source_file", ""),
                 speaker_stats=meta.get("speaker_stats"),
                 unresolved=meta.get("unresolved"),
+                recorded_source=meta.get("recorded_source", ""),
+                device=meta.get("device", ""),
             ))
         elif fmt == "md":
             path = outdir / f"{stem}.md"
@@ -234,6 +283,8 @@ def write_all(
                                          segments=segments, turns=turns,
                                          names=names, matches=matches))
         else:
-            continue
+            raise ValueError(
+                f"unknown output format {fmt!r}. A typo here used to cost one file "
+                "with no warning, after the transcription had already run.")
         written.append(path)
     return written
