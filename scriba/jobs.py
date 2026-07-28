@@ -21,6 +21,7 @@ from .config import JOBS_DIR
 class JobRow:
     path: Path
     source_name: str
+    source_path: str
     recorded: str
     duration: float
     state: str
@@ -78,6 +79,7 @@ def inventory() -> list[JobRow]:
         rows.append(JobRow(
             path=job_dir,
             source_name=Path(source).name if source else job_dir.name,
+            source_path=source,
             recorded=(state.get("recorded") or "")[:10],
             duration=float(state.get("duration") or 0.0),
             state=what,

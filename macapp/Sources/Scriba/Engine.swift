@@ -15,6 +15,9 @@ final class Engine: ObservableObject {
     @Published var speakers: [Speaker] = []
     @Published var errorText: String?
     @Published var isRunning = false
+    /// True while the state is being read in the background, so the interface can
+    /// say it is busy instead of appearing frozen.
+    @Published var isLoadingState = false
 
     private var process: Process?
 
@@ -54,12 +57,16 @@ final class Engine: ObservableObject {
 
     // MARK: - execution
 
-    func run(file: URL, language: String, minSpeakers: Int?, maxSpeakers: Int?) {
+    /// `onFinish` receives whether the engine exited cleanly, so a queue can move on
+    /// to the next recording. Without it the caller has to poll `isRunning`, and a
+    /// failure looks exactly like a success that ran quickly.
+    func run(file: URL, language: String, minSpeakers: Int?, maxSpeakers: Int?,
+             onFinish: ((Bool) -> Void)? = nil) {
         guard !isRunning else { return }
         var args = ["-m", "scriba.cli", "run", file.path, "--lang", language]
         if let m = minSpeakers { args += ["--min-speakers", String(m)] }
         if let m = maxSpeakers { args += ["--max-speakers", String(m)] }
-        launch(args, on: file, startingPhase: .preparing)
+        launch(args, on: file, startingPhase: .preparing, onFinish: onFinish)
     }
 
     func applyNames(file: URL, mapping: [String: String], enroll: Bool) {
@@ -70,7 +77,8 @@ final class Engine: ObservableObject {
         launch(args, on: file, startingPhase: .identifying)
     }
 
-    private func launch(_ args: [String], on file: URL, startingPhase: Phase) {
+    private func launch(_ args: [String], on file: URL, startingPhase: Phase,
+                        onFinish: ((Bool) -> Void)? = nil) {
         isRunning = true
         errorText = nil
         log.removeAll()
@@ -119,7 +127,8 @@ final class Engine: ObservableObject {
                 errPipe.fileHandleForReading.readabilityHandler = nil
                 self?.isRunning = false
                 self?.process = nil
-                if p.terminationStatus == 0 {
+                let ok = p.terminationStatus == 0
+                if ok {
                     self?.phase = .done
                     self?.reload(file: file)
                 } else {
@@ -129,6 +138,7 @@ final class Engine: ObservableObject {
                             ?? "The engine exited with code \(p.terminationStatus)."
                     }
                 }
+                onFinish?(ok)
             }
         }
 
@@ -139,6 +149,7 @@ final class Engine: ObservableObject {
             isRunning = false
             phase = .failed
             errorText = "Cannot launch Python at \(Self.pythonPath): \(error.localizedDescription)"
+            onFinish?(false)
         }
     }
 
@@ -175,26 +186,51 @@ final class Engine: ObservableObject {
 
     // MARK: - reading the state
 
+    /// Read the job state, off the main thread.
+    ///
+    /// This used to run the subprocess and wait for it right here, on the main actor.
+    /// Starting Python and importing numpy costs about four seconds, so dropping a
+    /// file froze the whole window for four seconds with nothing on screen to say
+    /// why, and the controls that appear once a file is loaded could not draw until
+    /// it was over. Under load, with a transcription already running, it is longer.
     func reload(file: URL) {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: Self.pythonPath)
-        proc.arguments = ["-m", "scriba.cli", "info", file.path]
-        proc.currentDirectoryURL = URL(fileURLWithPath: Self.enginePath)
-        var env = ProcessInfo.processInfo.environment
-        env["PYTHONPATH"] = Self.enginePath
-        proc.environment = env
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            proc.waitUntilExit()
-            guard let parsed = try? JSONDecoder().decode(JobInfo.self, from: data) else { return }
-            info = parsed
-            speakers = Self.buildSpeakers(from: parsed)
-        } catch {
-            errorText = "Cannot read the state: \(error.localizedDescription)"
+        isLoadingState = true
+        let python = Self.pythonPath
+        let root = Self.enginePath
+
+        Task.detached(priority: .userInitiated) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: python)
+            proc.arguments = ["-m", "scriba.cli", "info", file.path]
+            proc.currentDirectoryURL = URL(fileURLWithPath: root)
+            var env = ProcessInfo.processInfo.environment
+            env["PYTHONPATH"] = root
+            proc.environment = env
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = FileHandle.nullDevice
+
+            var parsed: JobInfo?
+            var failure: String?
+            do {
+                try proc.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                proc.waitUntilExit()
+                parsed = try? JSONDecoder().decode(JobInfo.self, from: data)
+            } catch {
+                failure = "Cannot read the state: \(error.localizedDescription)"
+            }
+
+            let result = parsed
+            let problem = failure
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.isLoadingState = false
+                if let problem { self.errorText = problem }
+                guard let result else { return }
+                self.info = result
+                self.speakers = Self.buildSpeakers(from: result)
+            }
         }
     }
 

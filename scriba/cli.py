@@ -319,6 +319,7 @@ app.add_typer(jobs_app, name="jobs")
 @jobs_app.command("list")
 def jobs_list(
     full: bool = typer.Option(False, "--full", help="Show disk use per job"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable, for the app"),
 ):
     """Every recording scriba has touched, and how far it got.
 
@@ -329,6 +330,20 @@ def jobs_list(
     from .jobs import inventory
 
     rows = inventory()
+    if as_json:
+        print(json.dumps([{
+            "job_dir": str(r.path),
+            "source": r.source_name,
+            "source_path": r.source_path,
+            "recorded": r.recorded,
+            "duration": r.duration,
+            "state": r.state,
+            "names": r.names,
+            "speakers": r.speakers,
+            "size_mb": round(r.size_mb, 1),
+            "has_output": r.has_output,
+        } for r in rows], ensure_ascii=False))
+        return
     if not rows:
         console.print("Nothing processed yet.")
         return
