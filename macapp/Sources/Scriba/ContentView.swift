@@ -218,9 +218,9 @@ struct ContentView: View {
         next()
     }
 
-    /// One at a time. Whisper already uses every fast core, so two transcriptions at
-    /// once finish later than the same two in sequence, and the machine is unusable
-    /// while they run.
+    /// One at a time. Whisper already spreads across every fast CPU, so two
+    /// transcriptions at once finish later than the same two in sequence, and the
+    /// machine is unusable while they run.
     private func next() {
         guard let item = queue.first(where: { $0.state == .waiting }) else {
             runningAll = false
@@ -339,7 +339,7 @@ struct PendingPanel: View {
                         Divider()
 
                         Stepper(expectedSpeakers == 0
-                                ? "People in the room: however many it finds"
+                                ? "People in the room: as many as it finds"
                                 : "People in the room: \(expectedSpeakers)",
                                 value: $expectedSpeakers, in: 0...12)
                         Text("The single setting that most affects whether the voices come "
