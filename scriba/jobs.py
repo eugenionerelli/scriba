@@ -55,8 +55,17 @@ def inventory() -> list[JobRow]:
         if state_path.exists():
             try:
                 state = json.loads(state_path.read_text())
-            except (json.JSONDecodeError, OSError):
+            except (ValueError, OSError):
+                # ValueError covers both a malformed document and invalid UTF-8,
+                # which is what a file half-written by a killed run looks like.
+                # Letting either escape lost the whole listing, so every other job
+                # became invisible and prune could not run at all.
                 state = {}
+        if not isinstance(state, dict):
+            # Valid JSON that is not an object: null, a list, a bare string. It
+            # parses, so nothing above catches it, and the first .get() call ends
+            # the listing with an AttributeError.
+            state = {}
 
         out_dir = job_dir / "output"
         has_output = out_dir.exists() and any(out_dir.iterdir())

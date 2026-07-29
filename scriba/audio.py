@@ -53,6 +53,19 @@ class AudioInfo:
     device: str = ""       # the encoder tag names the phone or watch that recorded it
 
 
+def _number(value, default: float) -> float:
+    """ffprobe writes the string "N/A" where a value is missing.
+
+    Raw ADTS and some streamed captures carry no duration at all, and a bare
+    float() on that raised exactly the unreadable cast error the friendly
+    messages in this module were written to replace.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def probe(path: Path) -> AudioInfo:
     probe_exe = _ffprobe()
     if not probe_exe:
@@ -77,8 +90,8 @@ def probe(path: Path) -> AudioInfo:
     stream = next((s for s in data.get("streams", []) if s.get("codec_type") == "audio"), {})
     return AudioInfo(
         path=path,
-        duration=float(fmt.get("duration", 0.0) or 0.0),
-        sample_rate=int(stream.get("sample_rate", 0) or 0),
+        duration=_number(fmt.get("duration"), 0.0),
+        sample_rate=int(_number(stream.get("sample_rate"), 0)),
         channels=int(stream.get("channels", 0) or 0),
         codec=str(stream.get("codec_name", "?")),
         created=str(tags.get("creation_time", "")),

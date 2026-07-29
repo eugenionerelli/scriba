@@ -16,6 +16,7 @@ a summary as if it were a fact.
 
 from __future__ import annotations
 
+import io
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -24,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import VOICES_DIR
+from .config import VOICES_DIR, write_atomic
 
 REGISTRY_PATH = VOICES_DIR / "registry.json"
 EMB_PATH = VOICES_DIR / "embeddings.npy"
@@ -97,12 +98,22 @@ class VoiceRegistry:
             self.emb = np.load(EMB_PATH)
 
     def save(self) -> None:
+        """Write both halves, embeddings first, each through a rename.
+
+        The registry stores row numbers into the embedding matrix, so the two
+        files have to agree. Writing the registry first and the matrix second
+        meant that losing the second write left names pointing at rows that do
+        not exist, which is the one state this module exists to prevent. This
+        order leaves an unreferenced row instead, which costs nothing.
+        """
         VOICES_DIR.mkdir(parents=True, exist_ok=True)
-        REGISTRY_PATH.write_text(json.dumps(
+        buf = io.BytesIO()
+        np.save(buf, self.emb)
+        write_atomic(EMB_PATH, buf.getvalue())
+        write_atomic(REGISTRY_PATH, json.dumps(
             {"version": 1, "people": [p.__dict__ for p in self.people.values()]},
             indent=2, ensure_ascii=False,
         ))
-        np.save(EMB_PATH, self.emb)
 
     # ---------------------------------------------------------------- reads
     def by_name(self, name: str) -> Person | None:
@@ -113,9 +124,14 @@ class VoiceRegistry:
         return None
 
     def vectors_of(self, person: Person) -> np.ndarray:
-        if not person.rows or self.emb.size == 0:
-            return np.zeros((0, self.emb.shape[1] if self.emb.ndim == 2 else 0), dtype=np.float32)
-        return self.emb[person.rows]
+        width = self.emb.shape[1] if self.emb.ndim == 2 else 0
+        # Rows that fall outside the matrix are dropped rather than indexed. They
+        # only appear when the two files have come apart, and an IndexError here
+        # would take down every later transcription at the identify step.
+        rows = [r for r in person.rows if 0 <= r < len(self.emb)]
+        if not rows:
+            return np.zeros((0, width), dtype=np.float32)
+        return self.emb[rows]
 
     def centroid_of(self, person: Person) -> np.ndarray | None:
         v = self.vectors_of(person)
@@ -137,6 +153,8 @@ class VoiceRegistry:
         embedding = np.asarray(embedding, dtype=np.float32).reshape(-1)
         if not np.all(np.isfinite(embedding)):
             raise ValueError("invalid embedding (contains NaN/inf)")
+
+        self._forget_missing_rows()
 
         if self.emb.size == 0:
             self.emb = np.zeros((0, embedding.shape[0]), dtype=np.float32)
@@ -162,6 +180,15 @@ class VoiceRegistry:
             person = Person(id=uuid.uuid4().hex[:12], name=name.strip(),
                             aliases=aliases or [], note=note)
             self.people[person.id] = person
+        else:
+            # Somebody adding an alias for a person already on file meant it: the
+            # old code read these two only when creating the person, so the alias
+            # was accepted, discarded, and never became findable.
+            for alias in aliases or []:
+                if alias and alias not in person.aliases:
+                    person.aliases.append(alias)
+            if note and not person.note:
+                person.note = note
 
         self.emb = np.vstack([self.emb, embedding[None, :]])
         person.rows.append(self.emb.shape[0] - 1)
@@ -172,10 +199,35 @@ class VoiceRegistry:
 
     def rename(self, old: str, new: str) -> Person | None:
         p = self.by_name(old)
-        if p:
-            p.name = new.strip()
-            p.updated = _now()
+        if p is None:
+            return None
+        taken = self.by_name(new)
+        if taken is not None and taken.id != p.id:
+            # Two people under one name is worse than a refused rename: lookups
+            # return whichever comes first, later prints pile onto one of them,
+            # and a match can end up reporting somebody as ambiguous with
+            # themselves. Merging is a decision, so it is not made here.
+            raise ValueError(
+                f"{new.strip()!r} is already in the registry. Rename or forget that "
+                "one first: two people under one name cannot be told apart afterwards.")
+        p.name = new.strip()
+        p.updated = _now()
         return p
+
+    def _forget_missing_rows(self) -> None:
+        """Drop row numbers that no longer exist, before handing out new ones.
+
+        If the embedding file is lost or truncated, people keep row numbers into a
+        matrix that is now shorter. Appending in that state used to hand row 0 to
+        the next person enrolled while an older person still claimed it, so a
+        stored name ended up pointing at somebody else's voice. Their prints are
+        gone either way. Saying so is the only honest option.
+        """
+        height = len(self.emb)
+        for person in self.people.values():
+            live = [r for r in person.rows if 0 <= r < height]
+            if len(live) != len(person.rows):
+                person.rows = live
 
     def forget(self, name: str) -> bool:
         p = self.by_name(name)
@@ -201,6 +253,14 @@ class VoiceRegistry:
         averaged centroid ends up resembling none of the recordings.
         """
         embedding = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        # enroll() explains a changed embedding dimension. Matching used to let it
+        # through to the matmul, so the same mistake produced a friendly sentence
+        # when naming somebody and a numpy traceback when transcribing.
+        width = self.emb.shape[1] if self.emb.ndim == 2 else 0
+        if width and embedding.shape[0] != width:
+            raise ValueError(
+                f"embedding dimension {embedding.shape[0]} != registry {width}; "
+                "you switched embedding model: start from a fresh registry")
         if not np.all(np.isfinite(embedding)) or not self.people:
             return Match(None, 0.0, None, 0.0,
                          "empty registry" if not self.people else "invalid embedding")

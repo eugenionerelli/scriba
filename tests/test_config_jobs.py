@@ -290,26 +290,14 @@ def test_validate_reports_every_problem_in_one_message():
 
 # --- bugs found while writing the above ------------------------------------- #
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG config.py:145 — validate() records the out-of-range problem for a "
-    "non-numeric threshold and then compares it anyway, so it dies with TypeError "
-    "instead of raising the ValueError it just built. cli.main() catches ValueError "
-    "and prints it in red; TypeError escapes as a raw traceback, and because almost "
-    "every command starts with Settings.load(), one null in settings.json makes the "
-    "whole tool crash instead of telling the user which value is wrong."))
+# Regression: this used to fail.
 @pytest.mark.parametrize("value", [None, "high"])
 def test_non_numeric_threshold_should_raise_valueerror(value):
     with pytest.raises(ValueError):
         _settings(voice_match_threshold=value).validate()
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG config.py:155 — same shape as above for speaker counts: a non-integer "
-    "min_speakers is recorded as a problem and then compared with max_speakers, "
-    "raising TypeError. Reachable from the CLI: `scriba settings --set "
-    "min_speakers=2` stores the string \"2\" (cli.py:441 picks the coercion from the "
-    "current value, which is None), and if max_speakers is already an int the next "
-    "Settings.load() blows up with a traceback."))
+# Regression: this used to fail.
 def test_non_integer_min_speakers_should_raise_valueerror():
     with pytest.raises(ValueError):
         _settings(min_speakers="2", max_speakers=5).validate()
@@ -460,6 +448,51 @@ def test_non_ascii_values_survive_the_round_trip(scriba_home):
 # --------------------------------------------------------------------------- #
 # hf_token / keychain (no subprocess is ever actually spawned)
 # --------------------------------------------------------------------------- #
+
+class _FakeCompleted:
+    def __init__(self, stdout=""):
+        self.stdout = stdout
+        self.returncode = 0
+
+
+def test_keychain_get_returns_the_stored_token(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _FakeCompleted("hf_finto_token\n")
+
+    monkeypatch.setattr(config_mod.subprocess, "run", fake_run)
+    assert config_mod.keychain_get() == "hf_finto_token"
+    assert calls == [["security", "find-generic-password", "-s",
+                      config_mod.KEYCHAIN_SERVICE, "-w"]]
+
+
+def test_keychain_get_treats_an_empty_entry_as_absent(monkeypatch):
+    monkeypatch.setattr(config_mod.subprocess, "run",
+                        lambda cmd, **kw: _FakeCompleted("  \n"))
+    assert config_mod.keychain_get() is None
+
+
+def test_keychain_set_writes_through_the_security_command(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _FakeCompleted()
+
+    monkeypatch.setattr(config_mod.os, "getlogin", lambda: "tester")
+    monkeypatch.setattr(config_mod.subprocess, "run", fake_run)
+
+    config_mod.keychain_set("hf_finto_token")
+
+    (cmd, kwargs), = calls
+    assert cmd[:2] == ["security", "add-generic-password"]
+    assert "-U" in cmd                                   # update in place
+    assert cmd[cmd.index("-s") + 1] == config_mod.KEYCHAIN_SERVICE
+    assert cmd[cmd.index("-w") + 1] == "hf_finto_token"
+    assert kwargs.get("check") is True
+
 
 def test_keychain_get_returns_none_when_the_entry_is_missing(monkeypatch):
     import subprocess
@@ -702,14 +735,7 @@ def test_an_unreadable_state_json_is_still_listed(jobs_dir):
     assert rows[0].source_path == ""
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG jobs.py:57-59 — `except (json.JSONDecodeError, OSError)` does not cover "
-    "UnicodeDecodeError, which is what Path.read_text() raises on a state.json "
-    "containing invalid UTF-8 (the usual shape of a file truncated or partially "
-    "overwritten by a crashed run). One such job takes down the whole inventory: "
-    "`scriba jobs list` prints a codec error and lists nothing, so every other job "
-    "becomes invisible, and jobs prune cannot run either. The module docstring "
-    "promises the opposite: 'Jobs whose state cannot be read are still listed.'"))
+# Regression: this used to fail.
 def test_a_state_json_with_invalid_utf8_is_still_listed(jobs_dir):
     make_job(jobs_dir, "bytes-0016", raw_state=b'\xff\xfe{"source": "/a/x.m4a"}',
              transcript=True, diarization=True)
@@ -719,12 +745,7 @@ def test_a_state_json_with_invalid_utf8_is_still_listed(jobs_dir):
     assert rows["bytes-0016"].state == "transcribed"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG jobs.py:57-60 — a state.json holding valid JSON that is not an object "
-    "('null', '[]', a bare string) parses fine, so nothing is caught, and then "
-    "state.get(...) at jobs.py:80 raises AttributeError. Same blast radius as the "
-    "UTF-8 case: one bad file and inventory() returns nothing at all, this time as "
-    "an uncaught traceback since cli.main() does not handle AttributeError."))
+# Regression: this used to fail.
 @pytest.mark.parametrize("payload", ["null", "[]", '"stato"'])
 def test_a_state_json_that_is_not_an_object_is_still_listed(jobs_dir, payload):
     make_job(jobs_dir, "nonoggetto-0018", raw_state=payload,

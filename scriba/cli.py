@@ -434,7 +434,20 @@ def settings(
         if not hasattr(s, k):
             console.print(f"[red]unknown setting: {k}[/red]")
             raise typer.Exit(1)
+        # The declared type, not the current value. Picking the coercion from
+        # the value meant that a field sitting at its None default (min_speakers,
+        # max_speakers) stored the string "2", and the next Settings.load()
+        # compared a string against an int.
+        declared = Settings.__dataclass_fields__[k].type
         cur = getattr(s, k)
+        if cur is None and isinstance(declared, str):
+            if "int" in declared:
+                cur = 0
+            elif "float" in declared:
+                cur = 0.0
+        if v.lower() in {"none", "null", ""} and cur is None:
+            setattr(s, k, None)
+            continue
         if isinstance(cur, bool):
             v2: object = v.lower() in {"1", "true", "si", "sì", "yes"}
         elif isinstance(cur, int) and not isinstance(cur, bool):

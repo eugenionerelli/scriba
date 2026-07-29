@@ -16,6 +16,7 @@ the whole file. Here we sample across the whole duration and vote.
 from __future__ import annotations
 
 from collections import defaultdict
+from statistics import mean
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -72,7 +73,13 @@ def detect(
         b = min(a + WINDOW_SEC * sr, len(data))
         if b - a < sr:            # less than a second: the window is useless
             continue
-        lang, prob, _ = model.detect_language(audio=data[a:b])
+        try:
+            lang, prob, _ = model.detect_language(audio=data[a:b])
+        except Exception:
+            # This module exists to survive a bad window, so it has to survive a
+            # bad window. One that raises used to take the whole detection with
+            # it, discarding the windows that had already voted.
+            continue
         samples.append((a / sr, lang, float(prob)))
         # Vote weighted by probability: an uncertain window must not count as much
         # as a confident one. Below 0.5 the model is guessing.
@@ -86,13 +93,26 @@ def detect(
     ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
     winner, score = ranked[0]
     total = sum(votes.values()) or 1.0
-    confidence = score / total
+    agreement = score / total
     runner_up = ranked[1][0] if len(ranked) > 1 else None
 
-    reliable = confidence >= 0.6
-    if not reliable:
+    # How sure the winning windows were, on their own terms. Agreement alone was
+    # the whole confidence, and agreement is a share: when every window says the
+    # same thing the share is exactly 1.0 however weak those windows were, so a
+    # file nobody could identify came out as the most confident case there is,
+    # and the header of the document said so. Five windows at 0.30 are five
+    # guesses that happen to agree.
+    strength = mean([p for _, lang, p in samples if lang == winner] or [0.0])
+    confidence = agreement * strength
+
+    reliable = agreement >= 0.6 and strength >= 0.5
+    if agreement < 0.6:
         note = (f"language unclear between {winner} and {runner_up}: "
                 "this may be a bilingual conversation. Check it by hand.")
+    elif strength < 0.5:
+        note = (f"{winner} in every window, but the model was unsure in each of them "
+                f"(average {strength:.0%}). Neighbouring languages get confused here: "
+                "say the language yourself if you know it.")
     elif runner_up:
         note = f"{winner} prevails; some windows were classified as {runner_up}"
     else:

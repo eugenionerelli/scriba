@@ -18,6 +18,30 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 
 KEYCHAIN_SERVICE = "scriba-hf-token"
 
+
+def write_atomic(path: Path, data: str | bytes) -> None:
+    """Write through a scratch file and rename.
+
+    A process killed between opening a file and finishing it leaves a truncated
+    file that the next run fails to parse, or worse, parses into something
+    plausible. The rename is atomic, so a reader sees the old file or the new
+    one and never half of either.
+    """
+    tmp = path.with_suffix(path.suffix + ".part")
+    try:
+        if isinstance(data, bytes):
+            tmp.write_bytes(data)
+        else:
+            tmp.write_text(data)
+        tmp.replace(path)
+    except BaseException:
+        # Leave nothing behind. A half-written scratch file that nobody reads is
+        # harmless right up to the moment somebody goes looking for why a job
+        # folder is bigger than it should be.
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 # The output formats export.write_all knows how to write. Anything else in
 # output_formats is a typo that would silently produce one file fewer.
 KNOWN_FORMATS = {"source", "md", "txt", "srt", "vtt", "json"}
@@ -137,12 +161,22 @@ class Settings:
         """
         problems: list[str] = []
 
+        def numeric(name: str) -> bool:
+            v = getattr(self, name)
+            return isinstance(v, (int, float)) and not isinstance(v, bool)
+
         for field_name in ("voice_match_threshold", "voice_suggest_threshold",
                            "voice_match_margin"):
             v = getattr(self, field_name)
-            if not isinstance(v, (int, float)) or not -1.0 <= float(v) <= 1.0:
+            if not numeric(field_name) or not -1.0 <= float(v) <= 1.0:
                 problems.append(f"{field_name}={v!r}: cosine similarity lives in [-1, 1]")
-        if self.voice_suggest_threshold > self.voice_match_threshold:
+        # Only compare once both sides are known to be numbers. Comparing them
+        # anyway raised TypeError from inside a method whose whole job is to
+        # raise a readable ValueError, and since nearly every command starts with
+        # Settings.load(), one null hand-edited into settings.json took the tool
+        # down with a traceback instead of naming the field.
+        if (numeric("voice_suggest_threshold") and numeric("voice_match_threshold")
+                and self.voice_suggest_threshold > self.voice_match_threshold):
             problems.append(
                 f"voice_suggest_threshold ({self.voice_suggest_threshold}) is above "
                 f"voice_match_threshold ({self.voice_match_threshold}), so the zone "
@@ -150,9 +184,10 @@ class Settings:
 
         for field_name in ("min_speakers", "max_speakers"):
             v = getattr(self, field_name)
-            if v is not None and (not isinstance(v, int) or v < 1):
+            if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v < 1):
                 problems.append(f"{field_name}={v!r}: a speaker count is a whole number, 1 or more")
-        if (self.min_speakers and self.max_speakers
+        if (isinstance(self.min_speakers, int) and isinstance(self.max_speakers, int)
+                and not isinstance(self.min_speakers, bool)
                 and self.min_speakers > self.max_speakers):
             problems.append(f"min_speakers ({self.min_speakers}) is above "
                             f"max_speakers ({self.max_speakers})")

@@ -8,7 +8,9 @@ attribution without re-transcribing is the normal case, not the exception.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import zipfile
 import re
 import unicodedata
 from dataclasses import asdict, dataclass
@@ -19,22 +21,12 @@ from typing import Any, Callable
 import numpy as np
 
 from . import asr, audio, diarize, export, lang, naming
-from .config import JOBS_DIR, Settings, ensure_dirs, hf_token
+from .config import JOBS_DIR, Settings, ensure_dirs, hf_token, write_atomic
 from .voices import VoiceRegistry
 
 Reporter = Callable[[str], None]
 
 
-def write_atomic(path: Path, text: str) -> None:
-    """Write through a scratch file and rename.
-
-    A job interrupted between opening a file and finishing it leaves a truncated
-    JSON that the next run fails to parse, or worse, parses into something plausible.
-    The rename is atomic, so a reader sees the old file or the new one.
-    """
-    tmp = path.with_suffix(path.suffix + ".part")
-    tmp.write_text(text)
-    tmp.replace(path)
 
 # Machine-readable error markers.
 #
@@ -81,6 +73,18 @@ class JobResult:
     unresolved: list[str]
     dossier_path: Path
     duration: float
+
+
+def _savez_atomic(path: Path, **arrays) -> None:
+    """np.savez through the same rename as everything else.
+
+    An interrupted run left a truncated archive, and the next `scriba name` died
+    inside np.load with a BadZipFile instead of saying the job has no speakers
+    yet. The sibling turns.json two lines away was already atomic.
+    """
+    buf = io.BytesIO()
+    np.savez(buf, **arrays)
+    write_atomic(path, buf.getvalue())
 
 
 class Job:
@@ -144,13 +148,24 @@ class Job:
             "initial_prompt": s.initial_prompt, "hotwords": sorted(s.hotwords),
             "temperature_fallback": s.temperature_fallback,
             "condition_on_previous_text": s.condition_on_previous_text,
+            # These three decide which segments survive decoding and when the
+            # temperature fallback fires, so they change the words. Leaving them
+            # out meant that changing one and rerunning printed "reusing the
+            # cache" and handed back the old transcript.
+            "no_speech_threshold": s.no_speech_threshold,
+            "log_prob_threshold": s.log_prob_threshold,
+            "compression_ratio_threshold": s.compression_ratio_threshold,
         }
         return hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:12]
 
     def _diar_fingerprint(self) -> str:
         from . import diarize as _d
+        # The device belongs here. config.py offers cpu as the way to check a
+        # suspected Metal problem, and without this the check reused the Metal
+        # result and proved nothing.
         payload = {"model": _d.DIARIZATION_MODEL,
-                   "min": self.s.min_speakers, "max": self.s.max_speakers}
+                   "min": self.s.min_speakers, "max": self.s.max_speakers,
+                   "device": self.s.diarize_device}
         return hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:12]
 
     def _drop_stale_cache(self) -> None:
@@ -168,7 +183,12 @@ class Job:
             (self.dir / name).unlink(missing_ok=True)
         for stale in ("language", "language_note", "language_confidence",
                       "language_samples", "word_level", "duration",
-                      "asr_fingerprint", "diar_fingerprint"):
+                      "asr_fingerprint", "diar_fingerprint",
+                      # Speaker labels are positional. Keeping the old mapping
+                      # over new audio meant run() reapplied the previous
+                      # conversation's names to whoever happens to be SPEAKER_00
+                      # this time, and produced a finished document saying so.
+                      "names", "matches"):
             self.state.pop(stale, None)
         self.state["source_fingerprint"] = current
         self._save_state()
@@ -308,7 +328,7 @@ class Job:
             device=self.s.diarize_device,
         )
         write_atomic(turns_path, json.dumps([asdict(t) for t in dia.turns], ensure_ascii=False))
-        np.savez(emb_path, **dia.embeddings)
+        _savez_atomic(emb_path, **dia.embeddings)
         self.state["diar_fingerprint"] = want
         self._save_state()
         self.report(f"diarization: {len(dia.speakers())} distinct voices, "
@@ -432,8 +452,17 @@ class Job:
         emb = self.dir / "embeddings.npz"
         if not emb.exists():
             return set()
-        with np.load(emb) as data:
-            return set(data.files)
+        try:
+            with np.load(emb) as data:
+                return set(data.files)
+        except (zipfile.BadZipFile, ValueError, OSError):
+            # A run killed mid-write leaves a truncated archive. Writes go
+            # through a rename now, so this is history rather than a live
+            # failure, but the file is already out there on somebody's disk and
+            # "no speakers yet" is a better answer than a BadZipFile traceback.
+            self.report("the voice prints for this job are unreadable: "
+                        "rerun with --force diar to rebuild them")
+            return set()
 
     # ---------------------------------------------------------------- rename
     def set_names(self, mapping: dict[str, str], *, enroll: bool = True) -> JobResult:
@@ -443,7 +472,7 @@ class Job:
 
         if enroll:
             emb_path = self.dir / "embeddings.npz"
-            if emb_path.exists():
+            if emb_path.exists() and self.speaker_labels():
                 reg = VoiceRegistry()
                 data = np.load(emb_path)
                 added = 0

@@ -217,13 +217,7 @@ def test_enrolling_under_an_alias_adds_a_print_instead_of_a_second_person(reg):
     assert p.name == "Alba Verzieri", "the canonical name is not replaced by the alias"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG voices.py:149-171 - enroll() only reads `aliases` and `note` on the "
-           "branch that creates a Person. Adding an alias to somebody already in the "
-           "registry is accepted without error and silently discarded, so the alias "
-           "never becomes findable and the user has no way to know.",
-)
+# Regression: this used to fail.
 def test_enroll_can_add_an_alias_to_someone_already_in_the_registry(reg):
     reg.enroll("Alba Verzieri", vec(0.9))
     reg.enroll("Alba Verzieri", vec(0.4, axis=2), aliases=["Albi"])
@@ -485,20 +479,19 @@ def test_forget_removes_the_person_and_leaves_the_others_matchable(reg):
     assert np.allclose(reg.vectors_of(bruno)[0], vec(0.20, axis=2))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG voices.py:173-178 - rename() does not check that the new name is free. "
-           "Renaming onto an existing name leaves two Person records with the same "
-           "name: by_name() then returns whichever the dict yields first, so later "
-           "enrolments pile onto one of them, forget() deletes only one, and match() "
-           "can report 'ambiguous: Alba Verzieri against Alba Verzieri'.",
-)
+# Regression: this used to fail.
 def test_rename_onto_an_existing_name_does_not_create_two_of_the_same_person(reg):
     reg.enroll("Alba Verzieri", vec(0.90, axis=1))
     reg.enroll("Bruno Meltrame", vec(0.88, axis=2))
-    reg.rename("Bruno Meltrame", "Alba Verzieri")
+
+    # Refused, and said out loud. Merging two people is a decision, and doing it
+    # silently leaves a registry where nothing can be told apart afterwards.
+    with pytest.raises(ValueError, match="already in the registry"):
+        reg.rename("Bruno Meltrame", "Alba Verzieri")
+
     names = [p.name.casefold() for p in reg.people.values()]
     assert len(set(names)) == len(names), f"duplicate names in the registry: {names}"
+    assert reg.by_name("Bruno Meltrame") is not None, "the rename did not half-happen"
 
 
 # --------------------------------------------------------------------------- #
@@ -645,19 +638,7 @@ def test_voices_py_has_no_minimum_speech_gate_of_its_own():
 # crash consistency: registry.json and embeddings.npy can disagree
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG voices.py:99-105 + 141-142 - save() is not atomic and not "
-           "transactional: registry.json is written first and embeddings.npy second, "
-           "with no temp-file-and-rename (the same codebase uses write_atomic "
-           "elsewhere, e.g. pipeline.py:310). If the second write is lost - killed "
-           "process, full disk, a user tidying up - the next load has people whose "
-           "`rows` point into an empty matrix. enroll() then hits `self.emb.size == 0`, "
-           "silently resets emb to a fresh (0, dim) matrix, and hands row 0 to the NEW "
-           "person, so the old person's `rows` now index the new person's voice print. "
-           "The registry does not notice, and the mismatch is exactly the thing this "
-           "module exists to prevent: a stored name pointing at somebody else's voice.",
-)
+# Regression: this used to fail.
 def test_a_lost_embeddings_file_must_not_hand_one_persons_rows_to_another(reg):
     reg.enroll("Alba Verzieri", vec(0.95, axis=1))
     reg.save()
@@ -674,14 +655,7 @@ def test_a_lost_embeddings_file_must_not_hand_one_persons_rows_to_another(reg):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG voices.py:115-118 - same lost-embeddings scenario, harder failure. "
-           "vectors_of does `self.emb[person.rows]` with no bounds check, so once one "
-           "new print has been enrolled the matrix is shorter than the stored row "
-           "indices and match() dies with IndexError instead of degrading. Every "
-           "later transcription of that user fails at the identify step.",
-)
+# Regression: this used to fail.
 def test_a_lost_embeddings_file_must_not_make_match_raise(reg):
     reg.enroll("Alba Verzieri", vec(0.95, axis=1))
     reg.enroll("Alba Verzieri", vec(0.40, axis=3))
@@ -693,16 +667,7 @@ def test_a_lost_embeddings_file_must_not_make_match_raise(reg):
     reg2.match(PROBE)  # IndexError: index 1 is out of bounds for axis 0 with size 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG voices.py:203-206 - match() validates the embedding for NaN/inf but "
-           "not for its length, so a probe of the wrong dimension escapes into the "
-           "matmul and raises a bare numpy ValueError about gufunc core dimensions. "
-           "enroll() checks the same thing at voices.py:143-147 and explains it "
-           "('you switched embedding model: start from a fresh registry'). A user who "
-           "changes model gets the friendly message when enrolling and a numpy "
-           "traceback when transcribing.",
-)
+# Regression: this used to fail.
 def test_match_reports_a_dimension_change_instead_of_crashing_in_numpy(reg):
     reg.enroll("Alba Verzieri", vec(0.9))
     with pytest.raises(ValueError, match="embedding model"):
