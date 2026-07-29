@@ -257,27 +257,34 @@ def test_windows_are_spread_across_the_whole_file(monkeypatch, wav):
 def test_close_vote_is_reported_as_uncertain_not_decided(monkeypatch, wav):
     """Two languages neck and neck: say so, do not pick one quietly.
 
-    A bilingual conversation is the realistic case, and the honest answer is
-    that there is no single answer.
+    Nobody confuses English with Japanese, so a file that splits between them
+    really is read as two languages being present, which is the branch this
+    tests. Two neighbours splitting is a different sentence, further down.
     """
     install_backends(monkeypatch, results=[
-        ("es", 0.90), ("it", 0.90), ("es", 0.90), ("it", 0.90), ("es", 0.55),
+        ("en", 0.90), ("ja", 0.90), ("en", 0.90), ("ja", 0.90), ("en", 0.55),
     ])
     guess = lang.detect(wav)
 
-    assert guess.language == "es"          # a winner is still named
+    assert guess.language == "en"          # a winner is still named
     assert guess.reliable is False         # but it is not presented as settled
     assert guess.confidence < 0.6
     assert "unclear" in guess.note
     # Both candidates are named, so a human can go and check.
-    assert "es" in guess.note and "it" in guess.note
+    assert "en" in guess.note and "ja" in guess.note
     assert "bilingual" in guess.note
     assert "hand" in guess.note
 
 
-def test_an_even_split_between_two_languages_is_never_reliable(monkeypatch, wav):
+def test_an_even_split_between_two_strangers_keeps_the_bilingual_reading(monkeypatch, wav):
+    """The reading that has to stay distinguishable from the neighbour one.
+
+    An even split between two languages nobody confuses is the case where two
+    languages in the room really is the better explanation, and it still gets
+    said in those words.
+    """
     back = install_backends(monkeypatch, results=[
-        ("es", 0.9), ("it", 0.9), ("es", 0.9), ("it", 0.9),
+        ("en", 0.9), ("ja", 0.9), ("en", 0.9), ("ja", 0.9),
     ], duration=4.0)                       # 4 s: the last window is too short to use
     guess = lang.detect(wav)
 
@@ -285,7 +292,12 @@ def test_an_even_split_between_two_languages_is_never_reliable(monkeypatch, wav)
     # agreement 0.5, strength 0.9: two sure windows each way is still a coin toss
     assert guess.confidence == pytest.approx(0.45)
     assert guess.reliable is False
-    assert "unclear" in guess.note
+    assert "ja" not in lang.neighbours_of("en")
+    assert guess.note == (
+        "language unclear between en and ja: this may be a bilingual "
+        "conversation. Check it by hand."
+    )
+    assert "split between" not in guess.note       # and not the neighbour sentence
 
 
 def test_a_three_to_two_split_lands_exactly_on_the_agreement_threshold(monkeypatch, wav):
@@ -786,8 +798,12 @@ def test_a_confident_split_between_two_neighbours_is_refused(monkeypatch, wav):
     assert guess.note == (
         "the windows split between it and es, which get confused with each "
         "other. That is more often one language the model cannot pin down than "
-        "two languages in the room. Pass --lang if you know which it is."
+        "two languages in the room, and a genuinely bilingual recording looks "
+        "the same from here. Pass --lang if you know which it is."
     )
+    # the sentence leans one way without pretending the other is ruled out
+    assert "more often" in guess.note
+    assert "looks the same from here" in guess.note
 
 
 def test_the_split_rule_ignores_how_strong_the_windows_were(monkeypatch, wav):
@@ -847,10 +863,13 @@ def test_the_split_note_wins_over_the_neighbour_note_and_names_the_runner_up(mon
     assert guess.reliable is False
 
 
-def test_a_weak_and_split_file_is_told_it_was_weak_first(monkeypatch, wav):
-    """Both weak and split. The weak sentence wins, and that is the right call:
-    an average of 30% is the more damning fact, and because a split can only
-    happen against a neighbour, the runner-up is named in that sentence anyway.
+# Regression: the weak branch listed the winner's whole family, so the one
+# language that had actually turned up was buried among seven that had not.
+def test_a_weak_and_split_file_names_only_the_language_that_turned_up(monkeypatch, wav):
+    """Both weak and split. The weak sentence wins, which is the right order:
+    an average of 30% is the more damning fact. It now names the runner-up
+    rather than the family, so the leading fact and the specific one both fit
+    in one sentence.
     """
     install_backends(monkeypatch, results=[
         ("es", 0.30), ("es", 0.30), ("es", 0.30), ("it", 0.30), ("es", 0.30),
@@ -859,22 +878,54 @@ def test_a_weak_and_split_file_is_told_it_was_weak_first(monkeypatch, wav):
 
     assert guess.strength == pytest.approx(0.30)          # weak
     assert guess.samples[3][1] == "it"                    # and split
-    assert "unsure in each of them" in guess.note         # weak sentence wins
-    assert "(average 30%)" in guess.note
-    assert "it" in guess.note                             # runner-up named regardless
+    assert guess.note == (
+        "es in most windows, but the model was unsure in each of them "
+        "(average 30%). The windows that disagreed said it. "
+        "Say the language yourself if you know it."
+    )
+    # the other five romance languages stay out of it
+    assert ", ".join(lang.neighbours_of("es")) not in guess.note
+    assert "It is being confused with" not in guess.note
     assert guess.reliable is False
 
 
-def test_an_even_split_between_neighbours_gets_the_bilingual_reading(monkeypatch, wav):
-    """Documented, and the one thing left in the branch order I would change.
+def test_a_weak_file_still_lists_the_family_when_nothing_disagreed(monkeypatch, wav):
+    """No runner-up, so there is no specific language to name and the family is
+    the only useful thing left to say."""
+    install_backends(monkeypatch, results=[("es", 0.30)] * 5)
+    guess = lang.detect(wav)
 
-    The unclear branch is checked first and does not look at the neighbour list,
-    so the same two languages get opposite explanations either side of an
-    agreement of 0.6. Four windows split two and two are called a possible
-    bilingual conversation; five split three and two are called one language the
-    model cannot pin down. The more even the split, the more the note leans
-    towards two languages being in the room, which is backwards: an even split
-    between neighbours is the stronger evidence of the model oscillating.
+    assert guess.note == (
+        f"es in every window, but the model was unsure in each of them "
+        f"(average 30%). It is being confused with "
+        f"{', '.join(lang.neighbours_of('es'))}. "
+        f"Say the language yourself if you know it."
+    )
+    assert "The windows that disagreed" not in guess.note
+
+
+def test_a_weak_file_split_against_a_stranger_lists_the_family(monkeypatch, wav):
+    """A runner-up that is not a neighbour is not what the winner is confused
+    with, so it is the family that gets named, not the runner-up."""
+    install_backends(monkeypatch, results=[
+        ("es", 0.30), ("es", 0.30), ("es", 0.30), ("ja", 0.30), ("es", 0.30),
+    ])
+    guess = lang.detect(wav)
+
+    assert "ja" not in lang.neighbours_of("es")
+    assert f"It is being confused with {', '.join(lang.neighbours_of('es'))}." in guess.note
+    assert "The windows that disagreed" not in guess.note
+    assert guess.reliable is False
+
+
+# Regression: the unclear branch was checked first and did not look at the
+# neighbour list, so the same pair got opposite explanations either side of an
+# agreement of 0.6, and the evener split was the one called bilingual.
+def test_the_split_reading_does_not_reverse_at_the_agreement_floor(monkeypatch, wav):
+    """Two windows each way and three against two are the same story.
+
+    Both are Spanish against Italian, and neither is called a bilingual
+    conversation on the strength of the vote alone.
     """
     install_backends(monkeypatch, results=[
         ("es", 0.9), ("it", 0.9), ("es", 0.9), ("it", 0.9),
@@ -886,10 +937,10 @@ def test_an_even_split_between_neighbours_gets_the_bilingual_reading(monkeypatch
     ])
     uneven = lang.detect(wav)
 
-    assert even.agreement < uneven.agreement
-    assert "bilingual conversation" in even.note
-    assert "than two languages in the room" in uneven.note
-    # both refused, so only the explanation differs
+    assert even.agreement < 0.6 <= uneven.agreement     # opposite sides of the floor
+    assert even.note == uneven.note                     # and the same sentence
+    assert even.note.startswith("the windows split between es and it")
+    assert "may be a bilingual conversation" not in even.note
     assert even.reliable is False and uneven.reliable is False
 
 
