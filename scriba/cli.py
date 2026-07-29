@@ -438,16 +438,20 @@ def settings(
         # the value meant that a field sitting at its None default (min_speakers,
         # max_speakers) stored the string "2", and the next Settings.load()
         # compared a string against an int.
-        declared = Settings.__dataclass_fields__[k].type
+        declared = str(Settings.__dataclass_fields__[k].type)
+        optional = "None" in declared
+        if optional and v.strip().lower() in {"none", "null", ""}:
+            # The way to say "let it work it out": min_speakers and max_speakers
+            # both mean "as many as it finds" when unset, and there was no way to
+            # get back there once a number had been stored.
+            setattr(s, k, None)
+            continue
         cur = getattr(s, k)
-        if cur is None and isinstance(declared, str):
+        if cur is None:
             if "int" in declared:
                 cur = 0
             elif "float" in declared:
                 cur = 0.0
-        if v.lower() in {"none", "null", ""} and cur is None:
-            setattr(s, k, None)
-            continue
         if isinstance(cur, bool):
             v2: object = v.lower() in {"1", "true", "si", "sì", "yes"}
         elif isinstance(cur, int) and not isinstance(cur, bool):

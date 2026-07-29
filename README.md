@@ -362,6 +362,19 @@ tools/          stylecheck.py, make-demo.py, and the writing rules this repo is 
 Comments in the code say why, not what. Where there is a magic number or a choice that
 reads oddly, the reason sits next to it, usually a bug already paid for.
 
+The tests live in `tests/` and run in about eight seconds, because none of them
+load a model:
+
+```bash
+pytest
+```
+
+They were written by a set of agents pointed at one module each and told to report
+defects rather than fix them, which turned up around twenty. The interesting ones
+are in the commit log: a registry save that could hand one person's voice print to
+another, a cache that kept the previous recording's speaker names, a language vote
+that reported a file nobody could identify as its most confident result.
+
 `tools/stylecheck.py` holds the writing rules for this repo, prose and comments alike.
 Run both checks before a commit:
 
