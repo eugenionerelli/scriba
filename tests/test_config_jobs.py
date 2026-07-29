@@ -634,21 +634,21 @@ def test_output_present_wins_over_the_missing_intermediates(jobs_dir):
 
 def test_inventory_reads_the_fields_it_reports(jobs_dir):
     make_job(jobs_dir, "riunione-9f3c", state={
-        "source": "/Volumes/Registrazioni/riunione con Mario.m4a",
+        "source": "/Volumes/Registrazioni/riunione con Otello.m4a",
         "recorded": "2026-03-14T09:15:00+01:00",
         "duration": 3671.5,
-        "matches": {"SPEAKER_00": "eugenio", "SPEAKER_01": "mario"},
-        "names": {"SPEAKER_00": "Eugenio", "SPEAKER_01": "Mario"},
+        "matches": {"SPEAKER_00": "vittoria", "SPEAKER_01": "otello"},
+        "names": {"SPEAKER_00": "Vittoria", "SPEAKER_01": "Otello"},
     }, transcript=True, diarization=True, output=["riunione.md"],
         wav_bytes=1_048_576)
 
     row = jobs_mod.inventory()[0]
-    assert row.source_name == "riunione con Mario.m4a"
-    assert row.source_path == "/Volumes/Registrazioni/riunione con Mario.m4a"
+    assert row.source_name == "riunione con Otello.m4a"
+    assert row.source_path == "/Volumes/Registrazioni/riunione con Otello.m4a"
     assert row.recorded == "2026-03-14"          # truncated to the date
     assert row.duration == pytest.approx(3671.5)
     assert row.speakers == 2
-    assert row.names == {"SPEAKER_00": "Eugenio", "SPEAKER_01": "Mario"}
+    assert row.names == {"SPEAKER_00": "Vittoria", "SPEAKER_01": "Otello"}
     assert row.audio_mb == pytest.approx(1.0)
     assert row.size_mb >= row.audio_mb
     assert row.state == "done"

@@ -31,16 +31,25 @@ WINDOW_SEC = 30
 # never really in the running: a Spanish conversation classified as Galician in
 # every window comes back as Galician-flavoured Spanish, spelled in a way that
 # reads as a transcription error rather than as the wrong language.
+# The list is not complete and is not meant to be: it is a set of pairs that
+# collide often enough to be worth a sentence. Adding a family only ever costs a
+# warning line, since `reliable` gates nothing, so err towards including a pair
+# rather than leaving it out.
 NEIGHBOURS: list[set[str]] = [
-    {"es", "gl", "pt", "ca", "it"},          # romance, western
+    {"es", "gl", "pt", "ca", "it", "oc"},    # romance, iberian and italian
+    {"fr", "oc", "ca"},                      # and the other side of the border
     {"it", "co", "la"},
     {"da", "no", "nn", "sv"},                # scandinavian
+    {"de", "nl", "af", "lb"},                # continental west germanic
     {"cs", "sk"},
     {"hr", "sr", "bs", "sl"},
+    {"bg", "mk"},                            # south slavic, the closest pair here
+    {"ru", "uk", "be"},
     {"ms", "id"},
-    {"hi", "ur", "pa"},
-    {"nl", "af"},
-    {"ru", "uk", "be", "bg"},
+    {"hi", "ur", "pa", "ne", "mr"},
+    {"zh", "yue"},
+    {"tr", "az"},
+    {"et", "fi"},
 ]
 
 # Below this average probability, a unanimous vote between neighbours is reported
@@ -156,8 +165,14 @@ def detect(
         # `samples` next to this sentence, and a note that talks past it is the
         # same overstatement this module exists to avoid.
         where = "in most windows" if runner_up else "in every window"
+        # The neighbours belong here too. Naming them only in the stronger branch
+        # meant the advice got vaguer as the evidence got worse: a file at 80%
+        # was told which languages it was being confused with, and the same file
+        # at 30% was told to work it out.
+        which = (f" It is being confused with {', '.join(near)}." if near else "")
         note = (f"{winner} {where}, but the model was unsure in each of them "
-                f"(average {strength:.0%}). Say the language yourself if you know it.")
+                f"(average {strength:.0%}).{which} Say the language yourself if "
+                "you know it.")
     elif unsure_neighbour:
         note = (f"{winner} at {strength:.0%} average, which is not high enough to "
                 f"separate it from {', '.join(near)}. These get confused with each "

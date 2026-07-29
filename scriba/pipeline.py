@@ -182,6 +182,7 @@ class Job:
                      "embeddings.npz", "turns.json"):
             (self.dir / name).unlink(missing_ok=True)
         for stale in ("language", "language_note", "language_confidence",
+                      "language_agreement", "language_strength",
                       "language_samples", "word_level", "duration",
                       "asr_fingerprint", "diar_fingerprint",
                       # Speaker labels are positional. Keeping the old mapping
