@@ -20,7 +20,7 @@ KEYCHAIN_SERVICE = "scriba-hf-token"
 
 # The output formats export.write_all knows how to write. Anything else in
 # output_formats is a typo that would silently produce one file fewer.
-KNOWN_FORMATS = {"notebooklm", "md", "txt", "srt", "vtt", "json"}
+KNOWN_FORMATS = {"source", "md", "txt", "srt", "vtt", "json"}
 
 
 # --------------------------------------------------------------------------- #
@@ -120,7 +120,7 @@ class Settings:
 
     # output
     output_formats: list[str] = field(
-        default_factory=lambda: ["notebooklm", "md", "json", "srt", "vtt", "txt"]
+        default_factory=lambda: ["source", "md", "json", "srt", "vtt", "txt"]
     )
     timestamp_every: int = 0                 # 0 = timestamp on every turn
 
@@ -180,6 +180,13 @@ class Settings:
         if SETTINGS_PATH.exists():
             raw = json.loads(SETTINGS_PATH.read_text())
             known = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
+            # The main output format was once named after the tool it was written
+            # for. Renaming it would turn every stored settings file into a hard
+            # error about an unknown format, so translate it instead.
+            formats = known.get("output_formats")
+            if isinstance(formats, list):
+                known["output_formats"] = ["source" if f == "notebooklm" else f
+                                           for f in formats]
             s = cls(**known)
             s.validate()
             return s

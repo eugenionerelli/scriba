@@ -58,7 +58,7 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="scriba-style-"))
 
     written = export.write_all(
-        tmp, "team-sync", ["notebooklm", "md", "txt", "srt", "vtt"],
+        tmp, "team-sync", ["source", "md", "txt", "srt", "vtt"],
         turns=TURNS, segments=TURNS, names=NAMES, meta=META,
         matches=[{"speaker": k, **v} for k, v in MATCHES.items()],
     )

@@ -1,10 +1,14 @@
-"""Output formats. The one that really matters is `notebooklm`.
+"""Output formats. The one that really matters is `source`.
 
-NotebookLM reasons over the text of a source, not over a data structure: anything
-that is not readable text is noise that burns context. So no JSON, no millisecond
-timestamps, no one-block-per-sentence. The header carries the metadata (who is
-there, when, how long it runs) because that is what the user asks about first.
-Then come real conversation turns, with the name up front.
+A source is the document you hand to something else: a colleague, a notes app, a
+model with a context window. Whatever reads it reads prose, not a data structure,
+so anything that is not readable text is noise. No JSON, no millisecond timestamps,
+no one block per sentence. The header carries the metadata (who is there, when, how
+long it runs) because that is what anyone asks about first. Then come real
+conversation turns, with the name up front.
+
+The other formats exist for tools that want them: subtitles for a video editor,
+JSON for a script, plain text for grep.
 """
 
 from __future__ import annotations
@@ -55,10 +59,10 @@ def display(speaker: str | None, names: dict[str, str] | None) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# NotebookLM
+# source
 # --------------------------------------------------------------------------- #
 
-def notebooklm(
+def source_doc(
     turns: list[dict],
     *,
     title: str,
@@ -109,7 +113,7 @@ def notebooklm(
         lines.append(f"- **Participants**: {', '.join(partecipanti)}")
     if unresolved:
         # Stating the uncertainty inside the source is the whole point: leave it out
-        # and NotebookLM treats "Voice 2" as if it were an identified person.
+        # and whatever reads the file treats "Voice 2" as an identified person.
         chi = ", ".join(sorted(unresolved))
         plurale = len(unresolved) > 1
         lines.append(
@@ -225,6 +229,31 @@ def payload_json(
     )
 
 
+# Every file this module writes, in one place. _sweep needs to know what a stale
+# output looks like, and a second list would drift from the first.
+FILENAMES = {
+    "source": "{stem} (source).md",
+    "md": "{stem}.md",
+    "txt": "{stem}.txt",
+    "srt": "{stem}.srt",
+    "vtt": "{stem}.vtt",
+    "json": "{stem}.json",
+}
+SUFFIXES = {".md", ".txt", ".srt", ".vtt", ".json"}
+
+
+def _sweep(outdir: Path, stem: str, formats: Iterable[str]) -> None:
+    """Delete outputs for this recording that no longer correspond to a format.
+
+    Only files this module could have written are considered, and only for this
+    stem: the output folder belongs to one job, but people do drop things in it.
+    """
+    keep = {FILENAMES[f].format(stem=stem) for f in formats if f in FILENAMES}
+    for path in outdir.glob(f"{stem}*"):
+        if path.is_file() and path.name not in keep and path.suffix in SUFFIXES:
+            path.unlink()
+
+
 def write_all(
     outdir: Path,
     stem: str,
@@ -239,19 +268,16 @@ def write_all(
     outdir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
-    # This file used to carry an em dash in its name. Renaming it was right, and it
-    # left a trap: write_all only ever writes, so a job exported under the old name
-    # and then re-run ends up with two NotebookLM sources in the same folder. Once
-    # both are uploaded there is no way to tell the stale one from the fresh one.
-    # Remove the old name instead of leaving that in a folder people drag files out of.
-    stale = outdir / f"{stem} — for NotebookLM.md"
-    if stale.exists():
-        stale.unlink()
+    # write_all only ever writes. If the name of a format ever changes again, the
+    # old file stays in the folder next to the new one and there is no telling the
+    # stale copy from the fresh one. Sweep anything matching this stem that we are
+    # not about to write.
+    _sweep(outdir, stem, formats)
 
     for fmt in formats:
-        if fmt == "notebooklm":
-            path = outdir / f"{stem} (for NotebookLM).md"
-            path.write_text(notebooklm(
+        if fmt == "source":
+            path = outdir / FILENAMES["source"].format(stem=stem)
+            path.write_text(source_doc(
                 turns,
                 title=meta.get("title", stem),
                 names=names,
@@ -265,19 +291,19 @@ def write_all(
                 device=meta.get("device", ""),
             ))
         elif fmt == "md":
-            path = outdir / f"{stem}.md"
+            path = outdir / FILENAMES["md"].format(stem=stem)
             path.write_text(markdown(turns, names=names))
         elif fmt == "txt":
-            path = outdir / f"{stem}.txt"
+            path = outdir / FILENAMES["txt"].format(stem=stem)
             path.write_text(plain(turns, names=names))
         elif fmt == "srt":
-            path = outdir / f"{stem}.srt"
+            path = outdir / FILENAMES["srt"].format(stem=stem)
             path.write_text(srt(segments, names=names))
         elif fmt == "vtt":
-            path = outdir / f"{stem}.vtt"
+            path = outdir / FILENAMES["vtt"].format(stem=stem)
             path.write_text(vtt(segments, names=names))
         elif fmt == "json":
-            path = outdir / f"{stem}.json"
+            path = outdir / FILENAMES["json"].format(stem=stem)
             path.write_text(payload_json(meta={k: (v.isoformat() if isinstance(v, datetime) else v)
                                                 for k, v in meta.items()},
                                          segments=segments, turns=turns,

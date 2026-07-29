@@ -1,4 +1,4 @@
-"""scriba: from voice memo to NotebookLM source."""
+"""scriba: turns a recorded conversation into a document that says who said what."""
 
 import os as _os
 

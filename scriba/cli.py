@@ -17,8 +17,8 @@ from .pipeline import Job
 from .voices import VoiceRegistry
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
-                  help="From voice memo to NotebookLM source: transcribes, separates the "
-                       "voices, learns who is who.")
+                  help="Turns a recorded conversation into a document that says who "
+                       "said what: transcribes, separates the voices, learns who is who.")
 console = Console()
 
 

@@ -7,7 +7,7 @@ import AppKit
 /// The rule this panel follows: nobody writes a name without having heard the
 /// voice first. That is why every row keeps the listen button right next to the
 /// name field. If assigning a name costs less than checking it, people assign
-/// without checking, and the wrong transcript ends up in NotebookLM as if it
+/// without checking, and the wrong transcript leaves this window as if it
 /// were a fact.
 struct ResultPanel: View {
     @ObservedObject var engine: Engine
@@ -110,9 +110,9 @@ struct ResultPanel: View {
 
     private var outputSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("To upload to NotebookLM").font(.headline)
+            Text("The document").font(.headline)
 
-            if let nb = info.outputs.first(where: { $0.contains("NotebookLM") }) {
+            if let nb = info.outputs.first(where: { $0.hasSuffix("(source).md") }) {
                 HStack(spacing: 10) {
                     Button {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: nb)])
@@ -133,7 +133,7 @@ struct ResultPanel: View {
 
             DisclosureGroup("Other formats (\(max(info.outputs.count - 1, 0)))") {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(info.outputs.filter { !$0.contains("NotebookLM") }, id: \.self) { p in
+                    ForEach(info.outputs.filter { !$0.hasSuffix("(source).md") }, id: \.self) { p in
                         Button(URL(fileURLWithPath: p).lastPathComponent) {
                             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)])
                         }
@@ -155,7 +155,7 @@ struct ResultPanel: View {
             Text("Preview").font(.headline)
             ForEach(info.turns.prefix(12)) { t in
                 let who = drafts[t.speaker ?? ""].flatMap { $0.isEmpty ? nil : $0 }
-                    ?? (t.speaker ?? "?").replacingOccurrences(of: "SPEAKER_", with: "Voice ")
+                    ?? Speaker.label(for: t.speaker ?? "?")
                 (Text("\(who) ").bold().foregroundColor(.accentColor)
                  + Text("[\(timecode(t.start))] ").font(.caption).foregroundColor(.secondary)
                  + Text(t.text))
@@ -213,7 +213,7 @@ struct SpeakerRow: View {
                 .help("Listen to the longest stretch of speech from this voice")
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(speaker.id.replacingOccurrences(of: "SPEAKER_", with: "Voice "))
+                    Text(Speaker.label(for: speaker.id))
                         .font(.callout).bold()
                     Text("\(humanDuration(speaker.speechSeconds)) · \(speaker.turnCount) turns")
                         .font(.caption).foregroundStyle(.secondary)

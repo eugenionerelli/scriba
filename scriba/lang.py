@@ -6,7 +6,7 @@ and completely made up. Spanish and Italian share too many near-identical words 
 the guess to look like a guess: `salir` lands on `salire`, `éxito` on `esito`, and
 every sentence reads as though somebody meant it. Nothing shows up on screen. That
 silence is what makes it the most dangerous way this pipeline can go wrong: the
-result *looks* right, and then ends up inside NotebookLM as a trusted source.
+result *looks* right, and then gets read by someone, or something, as fact.
 
 Whisper on its own looks at the first 30 seconds. Thirty seconds of small talk, or
 of someone speaking the wrong language for a moment, and the call is made wrong for

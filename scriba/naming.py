@@ -11,7 +11,7 @@ Three routes, in order of reliability:
    automatically: we produce the briefing and whoever decides, decides.
 
 None of these invents a name. When the name isn't known the voice stays "Voice 2", and
-the NotebookLM source says plainly that nobody identified it.
+the source document says plainly that nobody identified it.
 """
 
 from __future__ import annotations

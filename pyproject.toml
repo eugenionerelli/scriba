@@ -1,11 +1,11 @@
 [project]
 name = "scriba"
 version = "0.1.0"
-description = "Da memo vocale a fonte per NotebookLM: trascrive, separa le voci, impara chi è chi."
+description = "Turns a recorded conversation into a document that says who said what."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Eugenio Nerelli" }]
-keywords = ["whisper", "whisperx", "pyannote", "diarization", "transcription", "notebooklm"]
+keywords = ["whisper", "whisperx", "pyannote", "diarization", "transcription", "speaker-identification"]
 classifiers = [
     "Environment :: MacOS X",
     "License :: OSI Approved :: MIT License",

@@ -11,7 +11,7 @@ themselves.
 
 Matching policy, conservative on purpose: an "I don't know" beats a wrong name,
 because a wrong name quietly poisons every downstream transcript and then lands in
-NotebookLM as if it were a fact.
+a summary as if it were a fact.
 """
 
 from __future__ import annotations

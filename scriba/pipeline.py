@@ -1,4 +1,4 @@
-"""The orchestrator: from audio file to NotebookLM source.
+"""The orchestrator: from an audio file to a readable source document.
 
 A job is a folder under ~/.scriba/jobs/<slug>/ holding all intermediate state.
 That is deliberate: the phases cost minutes of CPU, and redoing only the name
