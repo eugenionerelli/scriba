@@ -13,14 +13,21 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 requires-python = ">=3.10"
+# The floors are the versions this is measured against, not the oldest that
+# imports. whisperX 3.8.6 is where digit-bearing tokens stopped coming out of the
+# aligner with no timestamp, and pyannote 4 is where diarization runs on Metal.
+# Under pyannote 3 the code still loads, and the numbers in the README do not hold.
 dependencies = [
-    "whisperx>=3.3.1",
-    "pyannote.audio>=3.3.2",
+    "whisperx>=3.8.6",
+    "pyannote.audio>=4.0",
     "numpy>=1.24",
     "typer>=0.12",
     "rich>=13",
     "soundfile>=0.12",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
 
 [project.urls]
 Homepage = "https://github.com/eugenionerelli/scriba"
