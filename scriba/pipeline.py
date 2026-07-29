@@ -94,6 +94,13 @@ class Job:
         self.source = Path(source).expanduser().resolve()
         if not self.source.exists():
             raise FileNotFoundError(self.source)
+        # Refuse before creating anything. The folder used to be made first, so
+        # pointing this at a README left a job directory named after it, listed
+        # for ever as state "nothing" until somebody ran prune.
+        if self.source.is_dir() or not audio.is_audio(self.source):
+            raise ValueError(
+                f"{self.source.name} is not an audio or video file. "
+                f"Extensions it knows: {', '.join(sorted(audio.AUDIO_EXTS))}")
         self.s = settings or Settings.load()
         self.report: Reporter = report or (lambda m: print(f"[scriba] {m}"))
         self.dir = JOBS_DIR / job_slug(self.source)
@@ -368,6 +375,13 @@ class Job:
                 "candidate": m.candidate.name if m.candidate else None,
                 "score": m.score, "reason": m.reason,
             }
+        # Say the stage happened even when it found nothing. The app reads these
+        # lines to tick its checklist, and on an empty registry, which is every
+        # first run, no line was printed at all: the stage the whole tool is
+        # about was the one that never ticked.
+        named = sum(1 for i in matches.values() if i.get("name"))
+        self.report(f"registry: compared {len(matches)} voices against "
+                    f"{len(reg.people)} on file, {named} recognised")
         for label, info in matches.items():
             if info.get("name"):
                 self.report(f"voice {label} → {info['name']} ({info['score']:.3f})")

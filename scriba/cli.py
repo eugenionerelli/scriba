@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .config import Settings, keychain_set, hf_token, DATA_DIR
-from .pipeline import Job
+from .pipeline import ERR_NO_TOKEN, Job
 from .voices import VoiceRegistry
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
@@ -65,34 +65,59 @@ def run(
 ):
     """Transcribe and diarize one or more files."""
     s = _settings(language, model, min_speakers, max_speakers, no_diarize)
+    failures: list[tuple[Path, str]] = []
     for f in files:
         console.rule(f"[bold]{f.name}")
-        # markup=False: the engine writes notes like "[bilingual, check by hand]" and
-        # Rich reads square brackets as a style tag, so the note vanished and left
-        # a bare warning symbol. The language warning is the project's main safety
-        # net, and it was the one line that never reached the screen.
-        job = Job(f, s, report=lambda m: console.print(f"  {m}", style="dim",
-                                                      markup=False, highlight=False))
-        res = job.run(force=force.value if force else None)
+        try:
+            _run_one(f, s, force)
+        except (FileNotFoundError, ValueError, RuntimeError, json.JSONDecodeError) as e:
+            # One bad file used to take the rest of the batch with it. Queue ten
+            # memos overnight, hit an iCloud placeholder at position two, and the
+            # other eight never ran. Each file stands on its own; the failures are
+            # collected and repeated at the end so they are not scrolled away.
+            failures.append((f, _readable(e)))
+            console.print(f"  {_readable(e)}", style="red", markup=False,
+                          highlight=False)
 
-        table = Table(show_header=True, header_style="bold")
-        table.add_column("voice")
-        table.add_column("name")
-        table.add_column("source")
-        for label in res.speakers:
-            name = res.names.get(label)
-            match = job.state.get("matches", {}).get(label, {})
-            origin = ("voice registry" if match.get("name") == name and name
-                      else "set manually" if name else "-")
-            table.add_row(label, name or "[yellow]unassigned[/yellow]", origin)
-        console.print(table)
+    if failures:
+        console.print(f"\n[red]{len(failures)} of {len(files)} did not go through:[/red]")
+        for f, why in failures:
+            console.print(f"  {f.name}: {why}", markup=False, highlight=False)
+        raise typer.Exit(1)
 
-        if res.unresolved:
-            console.print(f"\n  Unidentified voices. Read the briefing:\n"
-                          f"  [cyan]{res.dossier_path}[/cyan]\n"
-                          f"  then: [bold]scriba name \"{f.name}\" SPEAKER_00=Name ...[/bold]\n")
-        for o in res.outputs:
-            console.print(f"  → {o}")
+
+def _run_one(f: Path, s, force) -> None:
+    """One file, start to finish. Separate so a failure stays local to it."""
+    # markup=False: the engine writes notes like "[bilingual, check by hand]" and
+    # Rich reads square brackets as a style tag, so the note vanished and left
+    # a bare warning symbol. The language warning is the project's main safety
+    # net, and it was the one line that never reached the screen.
+    job = Job(f, s, report=lambda m: console.print(f"  {m}", style="dim",
+                                                  markup=False, highlight=False))
+    res = job.run(force=force.value if force else None)
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("voice")
+    table.add_column("name")
+    table.add_column("source")
+    for label in res.speakers:
+        name = res.names.get(label)
+        match = job.state.get("matches", {}).get(label, {})
+        origin = ("voice registry" if match.get("name") == name and name
+                  else "set manually" if name else "-")
+        table.add_row(label, name or "[yellow]unassigned[/yellow]", origin)
+    console.print(table)
+
+    if res.unresolved:
+        # Name the voices that are actually unresolved. The hint used to be
+        # hardcoded to SPEAKER_00, which on a run where SPEAKER_00 was already
+        # recognised told the reader to overwrite the name it had got right.
+        example = " ".join(f"{label}=Name" for label in sorted(res.unresolved))
+        console.print(f"\n  Unidentified voices. Read the briefing:\n"
+                      f"  [cyan]{res.dossier_path}[/cyan]\n"
+                      f"  then: [bold]scriba name \"{f.name}\" {example}[/bold]\n")
+    for o in res.outputs:
+        console.print(f"  → {o}")
 
 
 @app.command()
@@ -397,8 +422,14 @@ def jobs_prune(
 
     freed = sum(mb for _, mb in targets)
     console.print(f"About to remove {len(targets)} items, freeing {freed:.0f} MB:")
+    # Which recording, not which file. Every prepared audio file is called
+    # audio16k.wav, so a list of names read as the same line twelve times over
+    # and told you nothing about what you were about to delete.
+    by_dir = {r.path: r.source_name for r in rows}
     for path, mb in targets[:12]:
-        console.print(f"  {path.name}  {mb:.0f} MB", style="dim",
+        owner = by_dir.get(path if path.is_dir() else path.parent, path.name)
+        what = "the whole job" if path.is_dir() else path.name
+        console.print(f"  {owner}  ({what})  {mb:.0f} MB", style="dim",
                       markup=False, highlight=False)
     if len(targets) > 12:
         console.print(f"  and {len(targets) - 12} more", style="dim")
@@ -470,6 +501,16 @@ def settings(
         console.print(f"[dim]{DATA_DIR}[/dim]")
 
 
+def _readable(exc: BaseException) -> str:
+    """The engine's message without the marker the app reads it by.
+
+    ERR_NO_TOKEN exists so the Swift side can recognise this one failure without
+    matching on its wording. In a terminal it is noise, and it was being printed
+    verbatim: the app strips it and the person at the keyboard did not.
+    """
+    return str(exc).replace(ERR_NO_TOKEN, "").strip()
+
+
 def main() -> None:
     """Run the app, and turn the failures we expect into one readable line.
 
@@ -493,13 +534,10 @@ def main() -> None:
         console.print(f"[red]A cached file is corrupted:[/red] {exc}")
         console.print("Delete that job folder under ~/.scriba/jobs and run it again.")
         sys.exit(1)
-    except ValueError as exc:
-        console.print(str(exc), style="red", markup=False, highlight=False)
-        sys.exit(1)
-    except RuntimeError as exc:
-        # The engine raises RuntimeError for failures it can explain, with the
+    except (ValueError, RuntimeError) as exc:
+        # The engine raises these for failures it can explain, with the
         # explanation already written. Print it and get out of the way.
-        console.print(str(exc), style="red", markup=False, highlight=False)
+        console.print(_readable(exc), style="red", markup=False, highlight=False)
         sys.exit(1)
 
 

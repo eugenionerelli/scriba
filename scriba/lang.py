@@ -164,9 +164,26 @@ def detect(
 
     reliable = (agreement >= 0.6 and strength >= 0.5
                 and not unsure_neighbour and not split_between_neighbours)
+
+    # Written once and used in two branches. The reading has to be the same on
+    # both sides of the agreement floor: the more evenly a file splits between two
+    # confusable languages, the better the evidence that the model is oscillating,
+    # so it made no sense for the evener split to be the one called bilingual.
+    # The weakness is part of the story when there is any. Without it, a file the
+    # model was guessing on in every window reads the same as one oscillating
+    # between two real candidates, and those call for different answers.
+    how_sure = (f" It was unsure in every window (average {strength:.0%})."
+                if strength < 0.5 else "")
+    split_note = (f"the windows split between {winner} and {runner_up}, which get "
+                  "confused with each other. That is more often one language the "
+                  "model cannot pin down than two languages in the room, and a "
+                  f"genuinely bilingual recording looks the same from here.{how_sure} "
+                  "Pass --lang if you know which it is.")
+
     if agreement < 0.6:
-        note = (f"language unclear between {winner} and {runner_up}: "
-                "this may be a bilingual conversation. Check it by hand.")
+        note = split_note if split_between_neighbours else (
+            f"language unclear between {winner} and {runner_up}: "
+            "this may be a bilingual conversation. Check it by hand.")
     elif strength < 0.5:
         # "in every window" only when it was every window. The runner-up sits in
         # `samples` next to this sentence, and a note that talks past it is the
@@ -176,15 +193,20 @@ def detect(
         # meant the advice got vaguer as the evidence got worse: a file at 80%
         # was told which languages it was being confused with, and the same file
         # at 30% was told to work it out.
-        which = (f" It is being confused with {', '.join(near)}." if near else "")
+        # Name the language that actually turned up rather than the whole family.
+        # A winner of `it` has eight neighbours, and burying the one that appeared
+        # among seven that did not is a way of saying less while writing more.
+        if split_between_neighbours:
+            which = f" The windows that disagreed said {runner_up}."
+        elif near:
+            which = f" It is being confused with {', '.join(near)}."
+        else:
+            which = ""
         note = (f"{winner} {where}, but the model was unsure in each of them "
                 f"(average {strength:.0%}).{which} Say the language yourself if "
                 "you know it.")
     elif split_between_neighbours:
-        note = (f"the windows split between {winner} and {runner_up}, which get "
-                f"confused with each other. That is more often one language the "
-                f"model cannot pin down than two languages in the room. Pass "
-                f"--lang if you know which it is.")
+        note = split_note
     elif unsure_neighbour:
         note = (f"{winner} at {strength:.0%} average, which is not high enough to "
                 f"separate it from {', '.join(near)}. These get confused with each "
