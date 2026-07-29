@@ -1,6 +1,6 @@
 """Tests for the two decisions nothing else in the suite looks at.
 
-* ``scriba.diarize.assign`` — which speaker said which words. ``to_turns`` has plenty
+* ``scriba.diarize.assign``: which speaker said which words. ``to_turns`` has plenty
   of coverage, but it only glues together what ``assign`` already decided: hand it
   segments whose ``speaker`` is wrong and it merges them into a wrong transcript
   without a single test noticing. The tests here build diarization turns and whisper
@@ -9,7 +9,7 @@
   instead of being guessed, and a word stranded in silence inherits from its
   neighbour only if the neighbour is within half a second.
 
-* ``scriba.watch`` — when a dropped file is ready to be transcribed, and what gets
+* ``scriba.watch``: when a dropped file is ready to be transcribed, and what gets
   remembered afterwards. Three rules carry all the weight: a file is processed only
   once its size has stopped changing (otherwise a 200 MB copy in flight is
   transcribed half-written, and the transcript stops mid-conversation with nothing
@@ -35,7 +35,7 @@ from scriba import diarize, watch
 
 
 # --------------------------------------------------------------------------- #
-# PART ONE — diarize.assign
+# PART ONE: diarize.assign
 # --------------------------------------------------------------------------- #
 
 def dia(*specs: tuple[float, float, str]) -> diarize.Diarization:
@@ -179,7 +179,7 @@ def test_a_word_straddling_the_handover_goes_to_the_speaker_it_overlaps_most():
 
 def test_orphan_word_inherits_from_the_previous_word_within_half_a_second():
     """A word landing in the silence after Ada, a quarter of a second later, is
-    still Ada's — even though the segment as a whole belongs to Bruno."""
+    still Ada's, even though the segment as a whole belongs to Bruno."""
     words = [word("mira", 2.5, 2.75), word("eh", 3.0, 3.25)]
     segments = diarize.assign([seg(0.0, 10.0, "mira eh", words)],
                               dia((0.0, 3.0, "ADA"), (4.0, 10.0, "BRUNO")))
@@ -268,7 +268,7 @@ def test_no_segments_gives_no_segments():
 
 
 def test_a_diarization_with_no_turns_leaves_the_segments_as_they_were():
-    """Nothing to attribute from, so nothing is claimed: no speaker key appears.
+    """Nothing to attribute from, so nothing is claimed: no speaker field appears.
 
     Downstream `to_turns` reads `seg.get("speaker")` and gets None, which is the
     honest answer for a file diarization found nobody in.
@@ -303,14 +303,14 @@ def test_every_segment_of_a_conversation_is_decided_separately():
 
 
 # --------------------------------------------------------------------------- #
-# PART TWO — scriba.watch
+# PART TWO: scriba.watch
 # --------------------------------------------------------------------------- #
 
 class Harness:
     """A watched folder with the pipeline and the clock replaced.
 
     `Job` becomes a recorder: it notes the size of the file at the moment the job
-    was built (that is the whole point of the stability check — a job built too
+    was built (that is the whole point of the stability check: a job built too
     early sees a half-copied file) and never transcribes anything. `time.sleep`
     becomes a round counter that runs whatever the test wants to happen between
     rounds and stops the loop with a KeyboardInterrupt, which is how `watch`
@@ -517,8 +517,8 @@ def test_a_file_that_vanishes_between_the_listing_and_the_size_check_is_skipped(
     """The race: `iterdir` lists it, and by the time its size is read the Shortcut
     has moved it away, or iCloud has evicted it.
 
-    Modelled by letting the first `stat` of that name through — the one `is_file`
-    does, which is what makes the file look present — and failing every later one.
+    Modelled by letting the first `stat` of that name through, the one `is_file`
+    does, which is what makes the file look present, and failing every later one.
     That is the exact window the guard covers. An unguarded `stat` raises out of
     `watch()` entirely, since the only handler in the loop is for KeyboardInterrupt,
     and the watcher is then gone: no message, no process, and a folder that quietly
@@ -586,7 +586,7 @@ def test_a_failing_file_is_not_retried_every_five_seconds_forever(harness):
 
     Retrying it every interval would fill the log with the same traceback until
     somebody noticed, and would keep a broken file ahead of the ones that work.
-    Nothing is written to `.scriba-done` for it, though — that folder means "this
+    Nothing is written to `.scriba-done` for it, though, that folder means "this
     file has a transcript", and this one has none.
     """
     harness.drop("rota.m4a")
@@ -644,8 +644,8 @@ def test_a_failed_file_replaced_while_the_watcher_runs_waits_for_the_next_one(ha
     """Current shape of `failed`, pinned rather than admired.
 
     The set holds names, and the name is checked before the size, so re-exporting
-    the recording and dropping it in under the same name — the first thing anyone
-    does when told a file could not be transcribed — does not get it looked at again
+    the recording and dropping it in under the same name, the first thing anyone
+    does when told a file could not be transcribed, does not get it looked at again
     this run. The 900-byte replacement below sits there untouched, and only the
     restart the log promised picks it up. Keying `failed` on the size as well, or
     dropping the name from it when the size changes, would make the obvious fix work

@@ -397,7 +397,7 @@ def test_the_finished_document_agrees_with_the_job_result(tmp_path, monkeypatch)
 # --------------------------------------------------------------------------- #
 
 def test_a_voice_with_too_little_speech_is_never_compared_at_all(tmp_path, monkeypatch):
-    """Five seconds of audio is not a voice print, however good the score looks.
+    """Five seconds of audio is not a voice print, whatever the score says.
 
     The registry here would name both speakers with high confidence. The gate has
     to stop the thin one before the comparison happens, not filter the answer

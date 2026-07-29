@@ -957,7 +957,7 @@ def test_a_split_is_only_a_split_against_the_runner_up(monkeypatch, wav):
 
     assert guess.language == "es"
     assert sorted(guess.votes, key=guess.votes.get, reverse=True) == ["es", "en", "gl"]
-    assert "gl" in lang.neighbours_of("es")       # present, but not the runner-up
+    assert "gl" in lang.neighbours_of("es")       # present. The runner-up is not
     assert guess.reliable is True
     assert "prevails" in guess.note
 

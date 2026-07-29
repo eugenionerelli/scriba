@@ -201,7 +201,7 @@ def test_accents_survive_as_plain_letters(tmp_path):
 
 
 @pytest.mark.xfail(strict=True, reason=(
-    "KNOWN, not fixed. slugify collapses spaces, underscores and hyphens to one "
+    "KNOWN, not fixed. slugify collapses spaces, low lines and hyphens to one "
     "character, so 'verbale 1.m4a' and 'verbale_1.m4a' in the same folder share a "
     "job directory and overwrite each other's output/. The source fingerprint "
     "keeps the transcript from being wrong, at the cost of a full re-transcription "
@@ -797,9 +797,9 @@ def test_a_failed_write_does_not_leave_the_scratch_file(tmp_path, monkeypatch):
 def test_write_atomic_round_trips_accents_and_symbols(tmp_path):
     """State and transcripts are dumped with ensure_ascii=False."""
     target = tmp_path / "turns.json"
-    text = json.dumps({"text": "Perché però, andiamo — sì. 🎙"}, ensure_ascii=False)
+    text = json.dumps({"text": "Perché però, andiamo, sì. 🎙"}, ensure_ascii=False)
     pipeline.write_atomic(target, text)
-    assert json.loads(target.read_text())["text"] == "Perché però, andiamo — sì. 🎙"
+    assert json.loads(target.read_text())["text"] == "Perché però, andiamo, sì. 🎙"
 
 
 def test_write_atomic_handles_a_name_without_a_suffix(tmp_path):

@@ -211,7 +211,7 @@ final class Engine: ObservableObject {
     /// Kill the child before the app goes away.
     ///
     /// A terminated app leaves its subprocess running: whisper carries on with
-    /// every fast core busy and no window left to explain what is using them.
+    /// the whole processor busy and no window left to explain what is using it.
     /// Somebody who quits an app has already said what they want.
     func terminateChild() {
         process?.terminate()

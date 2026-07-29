@@ -7,10 +7,10 @@ paths used are the ones pytest hands out under tmp_path.
 
 The three modules under test:
 
-* ``scriba.recurring`` — which voice comes back across recordings, and where to put
+* ``scriba.recurring``, which voice comes back across recordings, and where to put
   the threshold that decides "same person".
-* ``scriba.naming`` — the briefing a human (or an LLM) reads to put names to voices.
-* ``scriba.diarize`` — ``to_turns`` and ``_unpack``, the two pure helpers.
+* ``scriba.naming``, the briefing a human (or an LLM) reads to put names to voices.
+* ``scriba.diarize``, ``to_turns`` and ``_unpack``, the two pure helpers.
 """
 
 from __future__ import annotations
@@ -320,7 +320,7 @@ def test_threshold_uses_the_median_not_the_mean():
     """The recurring voice is inside the sample. A mean-and-standard-deviation rule
     is dragged upward by it; the median and MAD are not.
 
-    Constructed so the two disagree loudly: the same-person pairs are numerous
+    Constructed so the two disagree loudly: there are many same-person pairs
     enough to move a mean, and the cut still has to sit above the stranger band and
     below the recurring voice.
     """
@@ -379,7 +379,7 @@ def test_threshold_on_a_mostly_constant_input_with_real_outliers():
 
 
 def test_threshold_on_duplicate_copies_of_one_recording(tmp_path):
-    """Where the flattened MAD comes from in practice. Four byte-identical copies of
+    """Where the flattened MAD comes from. Four byte-identical copies of
     a one-voice memo produce cross-file pairs that are all exactly 1.0."""
     vec = unit(23)
     samples = [Sample(tmp_path / f"copy{i}.m4a", "SPEAKER_00", vec, 120.0, 0.0, 120.0)
@@ -453,7 +453,7 @@ def test_cluster_never_joins_two_speakers_of_one_recording_directly(tmp_path):
 def test_cluster_single_linkage_chains_through_a_middle_recording(tmp_path):
     """A person in a quiet room and the same person in a corridor may not look
     similar to each other, while both look similar to a third recording between
-    them. Chaining is a flaw in general and the point here."""
+    them. Chaining is a flaw elsewhere and the point here."""
     quiet = sample(tmp_path, "quiet.m4a", "S0", 0)
     middle = sample(tmp_path, "middle.m4a", "S0", 36.87)     # cos == 0.80 to quiet
     corridor = sample(tmp_path, "corridor.m4a", "S0", 73.74)  # cos == 0.28 to quiet

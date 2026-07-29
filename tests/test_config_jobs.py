@@ -690,7 +690,7 @@ def test_same_day_jobs_are_ordered_by_source_name(jobs_dir):
     make_job(jobs_dir, "uno", state={"source": "/a/aaa.m4a", "recorded": day})
     make_job(jobs_dir, "due", state={"source": "/a/zzz.m4a", "recorded": day})
     make_job(jobs_dir, "tre", state={"source": "/a/mmm.m4a", "recorded": day})
-    # reverse=True applies to the whole key, so names run Z to A within a day
+    # reverse=True applies to the whole sort field, so names run Z to A within a day
     assert [row.source_name for row in jobs_mod.inventory()] == [
         "zzz.m4a", "mmm.m4a", "aaa.m4a"]
 
