@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>scriba — transcripts that know who is talking</title>
+<title>scriba: transcripts that know who is talking</title>
 <meta name="description" content="Turns a recorded conversation into a document that says who said what. Learns a voice the first time you name it. Runs on your own machine.">
 <meta property="og:title" content="scriba">
 <meta property="og:description" content="Transcripts that know who is talking. Learns a voice the first time you name it, and runs entirely on your own machine.">
@@ -13,12 +13,12 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230E0D0C'/><g fill='%23E0A458'><rect x='7' y='13' width='2' height='6'/><rect x='12' y='8' width='2' height='16'/><rect x='17' y='11' width='2' height='10'/><rect x='22' y='14' width='2' height='4'/></g></svg>">
 
 <style>
-/* ---------------------------------------------------------------------------
+/* ===========================================================================
    scriba.
    No webfonts and no third-party anything: a page about audio that never
    leaves your machine has no business phoning a font CDN on every visit.
    The type is the system stack, worked instead of downloaded.
---------------------------------------------------------------------------- */
+------------=============================================================== */
 
 :root {
   /* Warm off-black. Neutral greys with no chroma read as dead, so every
@@ -68,7 +68,7 @@ a { color: inherit; }
 
 ::selection { background: var(--amber); color: #17150F; }
 
-/* --- rhythm ------------------------------------------------------------- */
+/* === rhythm ------------------------------------------------------------- */
 
 .wrap { max-width: 1180px; margin-inline: auto; padding-inline: var(--gutter); }
 .narrow { max-width: 68ch; }
@@ -99,7 +99,7 @@ h3 { font-size: clamp(1.15rem, 1rem + 0.6vw, 1.4rem); letter-spacing: -0.012em; 
 p { max-width: var(--measure); }
 .lede { font-size: clamp(1.12rem, 1.02rem + 0.5vw, 1.35rem); color: var(--text-dim); line-height: 1.55; }
 
-/* --- hero: asymmetric, weight to the left ------------------------------- */
+/* === hero: asymmetric, weight to the left ------------------------------- */
 
 header.hero {
   padding-block: clamp(3.5rem, 8vw, 7rem) clamp(3rem, 7vw, 6rem);
@@ -146,8 +146,8 @@ h1 em {
   border: 1px solid transparent;
   transition: transform 180ms cubic-bezier(.2,.7,.3,1), background-color 180ms ease, border-color 180ms ease;
 }
-.btn-primary { background: var(--amber); color: #17150F; }
-.btn-primary:hover { background: #EEB569; transform: translateY(-1px); }
+.btn-solid { background: var(--amber); color: #17150F; }
+.btn-solid:hover { background: #EEB569; transform: translateY(-1px); }
 .btn-ghost { border-color: var(--ink-line); color: var(--text-dim); }
 .btn-ghost:hover { border-color: var(--text-faint); color: var(--text); }
 
@@ -179,7 +179,7 @@ h1 em {
 }
 @media (max-width: 900px) { .hero-shot { margin-right: 0; } }
 
-/* --- figures ------------------------------------------------------------ */
+/* === figures ------------------------------------------------------------ */
 
 figure { margin: 0; }
 figure img {
@@ -208,7 +208,7 @@ figcaption {
   .split.flip figure { order: -1; }
 }
 
-/* --- the inverted section, for contrast --------------------------------- */
+/* === the inverted section, for contrast --------------------------------- */
 
 .paper {
   background: var(--paper);
@@ -251,7 +251,7 @@ blockquote.pull cite {
   margin-top: 1rem;
 }
 
-/* --- tables ------------------------------------------------------------- */
+/* === tables ------------------------------------------------------------- */
 
 table { border-collapse: collapse; width: 100%; margin-top: 2rem; font-size: 0.95rem; }
 th, td { text-align: left; padding: 0.85rem 1rem 0.85rem 0; border-bottom: 1px solid var(--ink-line); vertical-align: top; }
@@ -262,7 +262,7 @@ tr:last-child td { border-bottom: 0; }
 .zone-ask td:first-child { color: var(--amber); }
 .zone-new td:first-child { color: var(--text-faint); }
 
-/* --- speed bars --------------------------------------------------------- */
+/* === speed bars --------------------------------------------------------- */
 
 .bars { margin-top: clamp(2rem, 4vw, 3rem); display: grid; gap: 1.4rem; max-width: 760px; }
 .bar-row { display: grid; grid-template-columns: 13rem 1fr 5rem; gap: 1.25rem; align-items: center; }
@@ -280,7 +280,7 @@ tr:last-child td { border-bottom: 0; }
 .bar-row .hot ~ .bar-time, .bar-time.hot { color: var(--amber); }
 @media (prefers-reduced-motion: reduce) { .bar-fill { transition: none; } }
 
-/* --- code --------------------------------------------------------------- */
+/* === code =============================================================== */
 
 pre {
   background: var(--ink-raised);
@@ -298,7 +298,7 @@ code { font-family: var(--mono); font-size: 0.9em; }
 p code, li code { background: var(--ink-raised); padding: 0.1em 0.4em; border-radius: 4px; }
 .paper p code { background: rgba(23,21,15,.07); }
 
-/* --- steps -------------------------------------------------------------- */
+/* === steps -------------------------------------------------------------- */
 
 .steps { list-style: none; padding: 0; margin: clamp(2rem, 4vw, 3rem) 0 0; display: grid; gap: 2.25rem; max-width: 780px; }
 .steps li { display: grid; grid-template-columns: 3.5rem 1fr; gap: 1.25rem; align-items: start; }
@@ -306,7 +306,7 @@ p code, li code { background: var(--ink-raised); padding: 0.1em 0.4em; border-ra
 .steps h3 { margin-bottom: 0.35rem; }
 .steps p { color: var(--text-dim); margin: 0; }
 
-/* --- footer ------------------------------------------------------------- */
+/* === footer ------------------------------------------------------------- */
 
 footer {
   border-top: 1px solid var(--ink-line);
@@ -318,7 +318,7 @@ footer a { color: var(--text-dim); text-decoration-color: var(--ink-line); text-
 footer a:hover { color: var(--amber); }
 .footer-grid { display: flex; flex-wrap: wrap; gap: 2rem 3.5rem; justify-content: space-between; align-items: baseline; }
 
-/* --- entrance ----------------------------------------------------------- */
+/* === entrance ----------------------------------------------------------- */
 
 .rise { opacity: 0; transform: translateY(14px); }
 .rise.in { opacity: 1; transform: none; transition: opacity 520ms ease, transform 520ms cubic-bezier(.16,.84,.44,1); }
@@ -351,7 +351,7 @@ footer a:hover { color: var(--amber); }
           your machine.
         </p>
         <div class="actions">
-          <a class="btn btn-primary" href="https://github.com/eugenionerelli/scriba">
+          <a class="btn btn-solid" href="https://github.com/eugenionerelli/scriba">
             <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
             View on GitHub
           </a>
@@ -375,7 +375,7 @@ footer a:hover { color: var(--amber); }
   </div>
 </header>
 
-<!-- ---------------------------------------------------------------- 1 --- -->
+<!-- section 1 -->
 <section class="tight">
   <div class="wrap">
     <p class="eyebrow rise">The part everything else gets wrong</p>
@@ -414,7 +414,7 @@ footer a:hover { color: var(--amber); }
   </div>
 </section>
 
-<!-- ---------------------------------------------------------------- 2 --- -->
+<!-- section 2 -->
 <section class="paper">
   <div class="wrap">
     <p class="eyebrow rise">Why it exists</p>
@@ -445,7 +445,7 @@ footer a:hover { color: var(--amber); }
   </div>
 </section>
 
-<!-- ---------------------------------------------------------------- 3 --- -->
+<!-- section 3 -->
 <section>
   <div class="wrap">
     <p class="eyebrow rise">How it goes</p>
@@ -487,7 +487,7 @@ footer a:hover { color: var(--amber); }
   </div>
 </section>
 
-<!-- ---------------------------------------------------------------- 4 --- -->
+<!-- section 4 -->
 <section class="tight" style="background:var(--ink-raised);border-block:1px solid var(--ink-line)">
   <div class="wrap">
     <p class="eyebrow rise">Where the time goes</p>
@@ -526,7 +526,7 @@ footer a:hover { color: var(--amber); }
   </div>
 </section>
 
-<!-- ---------------------------------------------------------------- 5 --- -->
+<!-- section 5 -->
 <section id="install">
   <div class="wrap">
     <p class="eyebrow rise">Getting it running</p>

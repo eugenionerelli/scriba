@@ -32,10 +32,13 @@ def hhmmss(seconds: float, *, always_hours: bool = False) -> str:
 
 
 def srt_time(seconds: float) -> str:
-    seconds = max(0.0, float(seconds))
-    h, rem = divmod(int(seconds), 3600)
+    # Round to milliseconds first, then split. Rounding the fraction on its own
+    # lets 0.9996 come out as "00:00:00,1000", a four-digit field that strict
+    # subtitle parsers reject outright.
+    total_ms = int(round(max(0.0, float(seconds)) * 1000))
+    ms = total_ms % 1000
+    h, rem = divmod(total_ms // 1000, 3600)
     m, s = divmod(rem, 60)
-    ms = int(round((seconds - int(seconds)) * 1000))
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
@@ -125,7 +128,8 @@ def source_doc(
     shaky = [t for t in turns if float(t.get("confidence", 1.0)) < uncertain_below]
     if shaky:
         lines.append(
-            f"- **Attribution**: {len(shaky)} of {len(turns)} turns are marked "
+            f"- **Attribution**: {len(shaky)} of {len(turns)} turns "
+            f"{'is' if len(shaky) == 1 else 'are'} marked "
             "*(uncertain)*. The words are transcribed; which of the speakers said "
             "them is a guess, usually where two people talk over each other. Do not "
             "attribute a quote from those turns to a named person."
@@ -164,6 +168,10 @@ def source_doc(
         lines.append("")
         for t in shaky:
             who = display(t.get("speaker"), names)
+            # Same rule as the transcript. A quote lifted from this list without
+            # the marker reads as though "Voice 2" were somebody identified.
+            if t.get("speaker") and t["speaker"] not in names:
+                who = f"{who} (unidentified)"
             snippet = t["text"].strip()
             if len(snippet) > 90:
                 snippet = snippet[:90].rstrip() + "…"
@@ -192,12 +200,16 @@ def plain(turns: list[dict], *, names: dict[str, str] | None = None) -> str:
 
 def srt(segments: list[dict], *, names: dict[str, str] | None = None) -> str:
     out = []
-    for i, seg in enumerate(segments, 1):
+    # Counted over what is written, not over what was offered. Numbering the
+    # source segments and then skipping the empty ones leaves holes in the
+    # sequence, which strict parsers treat as a damaged file.
+    for seg in segments:
         text = (seg.get("text") or "").strip()
         if not text:
             continue
         who = display(seg.get("speaker"), names)
-        out.append(f"{i}\n{srt_time(seg['start'])} --> {srt_time(seg['end'])}\n[{who}] {text}\n")
+        out.append(f"{len(out) + 1}\n{srt_time(seg['start'])} --> "
+                   f"{srt_time(seg['end'])}\n[{who}] {text}\n")
     return "\n".join(out)
 
 
@@ -239,7 +251,6 @@ FILENAMES = {
     "vtt": "{stem}.vtt",
     "json": "{stem}.json",
 }
-SUFFIXES = {".md", ".txt", ".srt", ".vtt", ".json"}
 
 
 def _sweep(outdir: Path, stem: str, formats: Iterable[str]) -> None:
@@ -248,10 +259,20 @@ def _sweep(outdir: Path, stem: str, formats: Iterable[str]) -> None:
     Only files this module could have written are considered, and only for this
     stem: the output folder belongs to one job, but people do drop things in it.
     """
-    keep = {FILENAMES[f].format(stem=stem) for f in formats if f in FILENAMES}
-    for path in outdir.glob(f"{stem}*"):
-        if path.is_file() and path.name not in keep and path.suffix in SUFFIXES:
-            path.unlink()
+    wanted = {FILENAMES[f].format(stem=stem) for f in formats if f in FILENAMES}
+    # Every name this module could have written for this stem, minus the ones it
+    # is about to write. Matching on the suffix instead was close enough to work
+    # and wrong: with a stem like "Nota vocale 2026-03-04" it also matched the
+    # user's own "Nota vocale 2026-03-04 appunti.md" and deleted it. Globbing was
+    # the same mistake from the other side, since a stem containing [ or ] reads
+    # as a character class and quietly matches nothing at all.
+    for pattern in FILENAMES.values():
+        name = pattern.format(stem=stem)
+        if name in wanted:
+            continue
+        stale = outdir / name
+        if stale.is_file():
+            stale.unlink()
 
 
 def write_all(
@@ -265,6 +286,17 @@ def write_all(
     meta: dict[str, Any],
     matches: list[dict],
 ) -> list[Path]:
+    # Check the names before touching the folder. This used to sweep, write what
+    # it understood and raise afterwards, which left a half-updated folder and
+    # deleted the previous file for the format that was misspelled, after the
+    # transcription had already been paid for.
+    formats = list(formats)
+    unknown = [f for f in formats if f not in FILENAMES]
+    if unknown:
+        raise ValueError(
+            f"unknown output format {unknown[0]!r}. A typo here used to cost one "
+            "file with no warning, after the transcription had already run.")
+
     outdir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
@@ -308,9 +340,5 @@ def write_all(
                                                 for k, v in meta.items()},
                                          segments=segments, turns=turns,
                                          names=names, matches=matches))
-        else:
-            raise ValueError(
-                f"unknown output format {fmt!r}. A typo here used to cost one file "
-                "with no warning, after the transcription had already run.")
         written.append(path)
     return written
