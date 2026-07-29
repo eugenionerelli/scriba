@@ -562,12 +562,27 @@ def test_the_unanimous_but_unsure_note_says_what_happened(monkeypatch, wav):
     guess = lang.detect(wav)
 
     assert guess.note == (
-        "it in every window, but the model was unsure in each of them "
-        "(average 30%). Say the language yourself if you know it."
+        f"it in every window, but the model was unsure in each of them "
+        f"(average 30%). It is being confused with "
+        f"{', '.join(lang.neighbours_of('it'))}. "
+        f"Say the language yourself if you know it."
     )
     assert guess.reliable is False
     # and emphatically not the sentence for a file that was actually identified
     assert "across every window" not in guess.note
+
+
+def test_the_unsure_note_without_neighbours_keeps_the_shorter_wording(monkeypatch, wav):
+    """No neighbours, no middle sentence, and no dangling punctuation."""
+    install_backends(monkeypatch, results=[("en", 0.30)] * 5)
+    guess = lang.detect(wav)
+
+    assert guess.note == (
+        "en in every window, but the model was unsure in each of them "
+        "(average 30%). Say the language yourself if you know it."
+    )
+    assert "confused with" not in guess.note
+    assert guess.reliable is False
 
 
 # Regression: this branch is reached on mixed votes too, and the note used to
@@ -594,13 +609,13 @@ def test_the_unsure_note_says_every_window_only_when_it_was_every_window(monkeyp
     assert guess.note.startswith("es in every window")
 
 
-def test_the_worst_neighbour_files_are_told_the_least(monkeypatch, wav):
-    """Documented, and the one thing about the new rule I would change.
+# Regression: the strength < 0.5 branch is checked first, and it used to skip
+# the neighbours, so the advice got vaguer as the evidence got worse.
+def test_the_weakest_files_are_told_which_languages_they_are_confused_with(monkeypatch, wav):
+    """A Spanish file at 30% and the same file at 80% both name the neighbours.
 
-    The strength < 0.5 branch is checked before the neighbour branch, so a
-    Spanish file averaging 0.30 gets the generic sentence and is never told
-    which languages it is being confused with, while the same file at 0.80 is
-    told exactly. The advice gets less specific as the evidence gets worse.
+    Different sentences, since they are different problems, but neither of them
+    leaves the reader to work out which languages are in play.
     """
     install_backends(monkeypatch, results=[("es", 0.30)] * 5)
     very_weak = lang.detect(wav)
@@ -608,14 +623,21 @@ def test_the_worst_neighbour_files_are_told_the_least(monkeypatch, wav):
     less_weak = lang.detect(wav)
 
     assert very_weak.reliable is False and less_weak.reliable is False
-    assert "gl" in less_weak.note              # named for the better file
-    assert "gl" not in very_weak.note          # and not for the worse one
+    for note in (very_weak.note, less_weak.note):
+        for neighbour in lang.neighbours_of("es"):
+            assert neighbour in note
+    # the weaker file is told its windows were weak, the other that they collide
+    assert "unsure in each of them" in very_weak.note
+    assert "not high enough to separate it" in less_weak.note
 
 
 # ==========================================================================
 # the neighbour rule: unanimity between languages that get confused with each
 # other is not evidence, because the losing option was never in the running
 # ==========================================================================
+
+# These walk the table rather than restating it, so families can be added
+# without a test edit. Exactly one test below pins specific members.
 
 def test_neighbours_of_is_symmetric_and_excludes_itself():
     for family in lang.NEIGHBOURS:
@@ -630,13 +652,44 @@ def test_neighbours_of_is_symmetric_and_excludes_itself():
 
 
 def test_neighbours_of_unions_every_family_the_language_is_in():
-    # "it" sits in the western romance family and in the italic one
-    assert lang.neighbours_of("it") == ["ca", "co", "es", "gl", "la", "pt"]
-    assert lang.neighbours_of("es") == ["ca", "gl", "it", "pt"]
+    """A language in two families is confused with both sets, not the first one.
+
+    Derived from the table: for every language that appears more than once, the
+    result has to be the union of all its families.
+    """
+    seen = {}
+    for family in lang.NEIGHBOURS:
+        for language in family:
+            seen.setdefault(language, set()).update(family)
+
+    overlapping = [l for l, union in seen.items()
+                   if sum(l in f for f in lang.NEIGHBOURS) > 1]
+    assert overlapping, "the table no longer has a language in two families"
+
+    for language in overlapping:
+        assert lang.neighbours_of(language) == sorted(seen[language] - {language})
 
 
-@pytest.mark.parametrize("language", ["en", "ja", "zh", "ar", "he", "", "xx"])
-def test_a_language_with_no_neighbours_has_none(language):
+def test_the_languages_this_tool_is_used_on():
+    """The one place with hard-coded members, and the ones that matter here.
+
+    Italian and Spanish are what this pipeline actually sees, and Galician,
+    Portuguese and Catalan are what they come back as when the model slips.
+    English is the control: it has no near neighbour and is never held to the
+    higher bar.
+    """
+    assert "it" in lang.neighbours_of("es")
+    assert "es" in lang.neighbours_of("it")
+    for other in ("gl", "pt", "ca"):
+        assert other in lang.neighbours_of("es")
+        assert other in lang.neighbours_of("it")
+    assert lang.neighbours_of("en") == []
+
+
+@pytest.mark.parametrize("language", ["en", "ja", "ar", "he", "ko", "", "xx"])
+def test_a_language_outside_the_table_has_no_neighbours(language):
+    # the premise, so this fails loudly with a reason if the table grows into it
+    assert not any(language in family for family in lang.NEIGHBOURS)
     assert lang.neighbours_of(language) == []
 
 
@@ -680,23 +733,33 @@ def test_the_bar_itself_passes(monkeypatch, wav):
 
 
 def test_the_neighbour_note_names_every_neighbour_sorted(monkeypatch, wav):
+    """The sentence is pinned; the membership comes from the table, so growing
+    the table changes the list in the note without breaking this."""
     install_backends(monkeypatch, results=[("es", 0.73)] * 5)
     guess = lang.detect(wav)
 
+    listed = ", ".join(lang.neighbours_of("es"))
+    assert listed == ", ".join(sorted(lang.neighbours_of("es")))     # sorted, comma separated
     assert guess.note == (
-        "es at 73% average, which is not high enough to separate it from "
-        "ca, gl, it, pt. These get confused with each other, and the "
-        "transcript then comes out in a mixture. Pass --lang if you know "
-        "which it is."
+        f"es at 73% average, which is not high enough to separate it from "
+        f"{listed}. These get confused with each other, and the "
+        f"transcript then comes out in a mixture. Pass --lang if you know "
+        f"which it is."
     )
 
 
 def test_the_neighbour_note_spans_both_families_of_a_language(monkeypatch, wav):
-    """Italian is in two families, and the reader is told about both."""
+    """Italian is in two families, and the reader is told about both.
+
+    "co" reaches it only through the italic family and "es" only through the
+    iberian one, so both appearing means the note is not stopping at the first
+    family that matched.
+    """
     install_backends(monkeypatch, results=[("it", 0.70)] * 5)
     guess = lang.detect(wav)
 
-    assert "ca, co, es, gl, la, pt" in guess.note
+    assert ", ".join(lang.neighbours_of("it")) in guess.note
+    assert "co" in guess.note and "es" in guess.note
     assert guess.reliable is False
 
 
