@@ -11,6 +11,12 @@ struct ScribaApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing: .newItem) { }
+            CommandGroup(after: .toolbar) {
+                Button("Refresh the list") {
+                    NotificationCenter.default.post(name: .scribaRefresh, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+            }
             if WindowShot.isEnabled {
                 CommandGroup(after: .saveItem) {
                     Button("Save window as PNG") { WindowShot.save() }
@@ -23,6 +29,12 @@ struct ScribaApp: App {
             SettingsView()
         }
     }
+}
+
+extension Notification.Name {
+    /// Posted by the Refresh command. The window listens; the menu item does not
+    /// need to know anything about it.
+    static let scribaRefresh = Notification.Name("dev.nerelli.scriba.refresh")
 }
 
 /// Exists for one line: quitting has to take the engine with it.

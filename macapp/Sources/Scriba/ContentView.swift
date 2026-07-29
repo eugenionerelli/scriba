@@ -43,6 +43,16 @@ struct ContentView: View {
             store.reload()
             AppDelegate.onQuit = { [weak engine] in engine?.terminateChild() }
         }
+        // Coming back to the window is the moment to look again. The same engine
+        // is usable from a terminal, on purpose, so a transcription can appear
+        // while this window is open and it should not take a relaunch to see it.
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            if !engine.isRunning { store.reload() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .scribaRefresh)) { _ in
+            store.reload()
+        }
         .safeAreaInset(edge: .top) {
             // A wrong interpreter path used to look exactly like a clean install
             // with nothing in it: the state reader fails quietly and the sidebar
