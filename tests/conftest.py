@@ -8,7 +8,6 @@ them, or pruned them, would be a bad way to find that out.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -64,6 +63,3 @@ def turn():
 
 def pytest_report_header(config):
     return f"scriba tests, SCRIBA_HOME redirected, real home is {REAL_HOME}"
-
-
-assert "PYTEST_CURRENT_TEST" not in os.environ or True  # import-order sanity

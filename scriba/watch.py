@@ -40,6 +40,13 @@ def watch(
 
     seen: dict[Path, int] = {}
     processed: set[str] = {p.name for p in done_dir.glob("*")}
+    # Files that failed during this run. Kept in memory rather than on disk: not
+    # retrying every five seconds is right, never retrying is not. Most of the ways
+    # this fails are the same for every file and get fixed between runs, and one
+    # marker on disk cannot tell "this file is unusable" from "ffmpeg was not on
+    # the PATH that afternoon". A folder full of recordings and no transcripts,
+    # with nothing in the log, is the worst version of this.
+    failed: set[str] = set()
 
     report(f"watching {folder}  (ctrl-c to stop)")
     if processed:
@@ -48,10 +55,19 @@ def watch(
     while True:
         try:
             for path in sorted(folder.iterdir()):
-                if not path.is_file() or not is_audio(path) or path.name in processed:
+                if (not path.is_file() or not is_audio(path)
+                        or path.name in processed or path.name in failed):
                     continue
 
-                size = path.stat().st_size
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    # Moved, renamed or evicted by iCloud between the listing and
+                    # here. It used to take the watcher down with it, and a watcher
+                    # that has silently exited looks exactly like one with nothing
+                    # to do.
+                    seen.pop(path, None)
+                    continue
                 if seen.get(path) != size:
                     # Still being copied (or still syncing from iCloud): retry next round.
                     seen[path] = size
@@ -65,13 +81,14 @@ def watch(
                     if res.unresolved:
                         report(f"   unidentified voices: {', '.join(res.unresolved)} "
                                f"(read {res.dossier_path.name} and use `scriba name`)")
-                except Exception as exc:
-                    report(f"   error: {exc}")
-                finally:
-                    # The marker gets written either way: a file that makes the
-                    # pipeline fail should not retry every five seconds forever.
                     (done_dir / path.name).touch()
                     processed.add(path.name)
+                except Exception as exc:
+                    report(f"   error: {exc}")
+                    report("   left in place: it will be tried again next time "
+                           "you start the watcher")
+                    failed.add(path.name)
+                finally:
                     seen.pop(path, None)
 
             time.sleep(interval)

@@ -1099,11 +1099,12 @@ def test_apply_names_keeps_a_manual_name_for_a_label_that_is_not_in_this_run():
 
     The mapping is not filtered against the profiles it is handed, so a name decided
     for SPEAKER_02 survives into a run whose diarization produced no SPEAKER_02.
-    Harmless here, and the seed of a wrong name once the caller stores the result:
-    pipeline.run feeds this back into state["names"] on every pass, and
-    _drop_stale_cache (pipeline.py:159-162) does not clear "names" when the source
-    audio changes, so the entry is still there to be reapplied to whoever SPEAKER_02
-    turns out to be next time.
+    Harmless on its own, and it used to be the seed of a wrong name: pipeline.run
+    feeds this back into state["names"] on every pass, and _drop_stale_cache kept
+    that mapping when the source audio changed, so the entry was still there to be
+    reapplied to whoever SPEAKER_02 turned out to be next time. The cache now
+    forgets it, which is the right place for the fix. This function still does no
+    filtering of its own, which is what the assertion below records.
     """
     assert naming.apply_names({"SPEAKER_09": "Tazio"}, []) == {"SPEAKER_09": "Tazio"}
 

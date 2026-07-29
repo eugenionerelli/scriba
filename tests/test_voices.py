@@ -610,28 +610,48 @@ def test_summary_counts_prints_and_recordings_and_sorts_by_name(reg):
 # the minimum-speech rule
 # --------------------------------------------------------------------------- #
 
-def test_voices_py_has_no_minimum_speech_gate_of_its_own():
-    """Where the `voice_min_speech_sec` rule actually lives.
+def test_one_good_print_beats_a_centroid_that_resembles_nobody(reg):
+    """Why the score is the best of the centroid and the best single print.
 
-    It is not in this module: neither `enroll` nor `match` is told how many seconds of
-    speech an embedding came from, so a voice print built from two seconds of "mhm" is
-    enrolled and matched exactly like one built from ten minutes. The gate is applied
-    once by the caller, in pipeline.Job.identify (scriba/pipeline.py:324), which skips
-    the registry entirely for thin speakers.
+    Somebody enrolled from a phone call, a room and a car has three prints that
+    point in different directions, and their average points at none of them. Score
+    by the centroid alone and the person stops matching their own recordings:
+    below, three prints at 0.95, 0.0 and 0.0 against the probe give a centroid
+    around 0.55, which lands in the zone that only suggests, while the print that
+    actually matches sits at 0.95.
+    """
+    reg.enroll("Alba Verzieri", vec(0.95, axis=1))
+    reg.enroll("Alba Verzieri", vec(0.0, axis=2))
+    reg.enroll("Alba Verzieri", vec(0.0, axis=3))
 
-    That makes the rule easy to bypass: `scriba whoami` (cli.py:234) and
-    recurring.scan carry their own separate `--min-speech` default of 20.0s, and any
-    other caller of VoiceRegistry.enroll gets no gate at all. Pinning it here so that
-    moving the rule into the registry, or forgetting it in a new caller, is visible.
+    alba = reg.by_name("Alba Verzieri")
+    centroid = float(V.cosine(PROBE, reg.centroid_of(alba)[None, :])[0])
+    assert centroid < 0.75, "the average of three prints resembles none of them"
+
+    m = reg.match(PROBE)
+    assert m.accepted and m.person is alba
+    assert m.score == pytest.approx(0.95, abs=1e-6)
+
+
+def test_the_registry_is_not_told_how_much_speech_a_print_came_from():
+    """Where the `voice_min_speech_sec` rule is not.
+
+    Neither `enroll` nor `match` takes a duration, so a voice print built from two
+    seconds of "mhm" is treated exactly like one built from ten minutes. The gate
+    lives in the caller, `pipeline.Job.identify`, and `scriba whoami` carries a
+    separate one of its own.
+
+    This checks the interface rather than the source text. An earlier version of
+    this test grepped the module for the string, which meant it failed the day
+    somebody moved the rule to the right place: a test that punishes the fix.
+    Adding a duration argument here is welcome and will not fail anything; what
+    this pins is that today no caller can pass one and expect it to be honoured.
     """
     import inspect
 
     for fn in (V.VoiceRegistry.enroll, V.VoiceRegistry.match):
         params = set(inspect.signature(fn).parameters)
         assert not {"speech_sec", "duration", "min_speech", "min_speech_sec"} & params
-
-    src = inspect.getsource(V)
-    assert "min_speech" not in src and "voice_min_speech_sec" not in src
 
 
 # --------------------------------------------------------------------------- #
@@ -665,6 +685,22 @@ def test_a_lost_embeddings_file_must_not_make_match_raise(reg):
     reg2 = V.VoiceRegistry()
     reg2.enroll("Bruno Meltrame", vec(0.20, axis=2))
     reg2.match(PROBE)  # IndexError: index 1 is out of bounds for axis 0 with size 1
+
+
+def test_a_row_outside_the_matrix_is_dropped_rather_than_indexed(reg):
+    """The bounds filter in vectors_of, reached without going through enroll.
+
+    The test above enrolls first, and enrolling repairs the stored rows on the way
+    in, so it passes with or without the filter. This one corrupts the rows and
+    reads them directly, which is the only path where the filter is what stands
+    between a stale index and an IndexError out of every later transcription.
+    """
+    alba = reg.enroll("Alba Verzieri", vec(0.95, axis=1))
+    alba.rows.append(len(reg.emb) + 7)          # a row that was never there
+
+    vectors = reg.vectors_of(alba)              # must not raise
+    assert len(vectors) == 1
+    assert reg.match(PROBE).person is alba
 
 
 # Regression: this used to fail.

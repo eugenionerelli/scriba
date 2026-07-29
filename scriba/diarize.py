@@ -236,11 +236,11 @@ def assign(segments: list[dict], dia: Diarization, *, word_level: bool = True) -
     """Attach a speaker to every word and to every segment.
 
     Compared to `whisperx.assign_word_speakers`: here a word that overlaps no turn is
-    neither left orphaned nor handed to the "nearest" turn in absolute terms (which
-    can be very far away). It inherits from the previous word if that word ended
-    within half a second, otherwise it stays without one. Orphan words are the main
-    reason diarized transcripts end up with one-word turns attributed to the wrong
-    person.
+    not handed to the "nearest" turn in absolute terms, which can be very far away.
+    It inherits from the previous word when that word ended within half a second,
+    and otherwise falls back to whoever owns the segment it sits in. Orphan words
+    are the main reason diarized transcripts end up with one-word turns attributed
+    to the wrong person.
     """
     turns = dia.turns
     if not turns:

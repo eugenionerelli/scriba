@@ -142,7 +142,9 @@ def test_vtt_time_is_the_srt_stamp_with_a_dot():
     assert vtt_time(-1) == "00:00:00.000"
 
 
-# Regression. Was: scriba/export.py:38: the millisecond part is rounded independently of  the whole-second part, so any time whose fraction rounds up to 1.000 emits a  four-digit field: srt_time(0.9996 == '00:00:00,1000'. That is not a valid  SRT/VTT timestamp and a subtitle track containing it is rejected by p
+# Regression. srt_time rounded the milliseconds independently of the seconds,
+# so 0.9996 came out as 00:00:00,1000. A four-digit millisecond field is not a
+# valid SRT timestamp, and strict parsers reject the cue or the whole track.
 def test_srt_time_never_emits_a_four_digit_millisecond_field():
     assert srt_time(0.9996) == "00:00:01,000"
     assert srt_time(1.9999) == "00:00:02,000"
@@ -440,7 +442,9 @@ def test_source_doc_turns_to_check_keeps_a_short_quote_whole():
     assert check_lines(doc) == ["- [00:00] Ada Verdolini: Breve."]
 
 
-# Regression. Was: scriba/export.py:166: the 'Turns to check' section calls display(  without the '(unidentified' suffix that every transcript line carries, so a  quote lifted from that section reads as if 'Voice 2' were an identified  person. Same failure mode the per-line marker exists to prevent.
+# Regression. The "Turns to check" list called display() without the
+# (unidentified) suffix that every transcript line carries, so a quote lifted
+# from it read as though Voice 2 were somebody identified.
 def test_source_doc_turns_to_check_also_marks_unidentified_speakers(conversation):
     doc = source_doc(conversation, title="T", names={"SPEAKER_00": "Ada Verdolini"},
                      unresolved=["Voice 2"])
@@ -481,7 +485,9 @@ def test_srt_skips_blank_segments(segments):
     assert out.count("-->") == 2
 
 
-# Regression. Was: scriba/export.py:195: the cue number comes from enumerate( over all  segments, but blank segments are skipped afterwards, so the numbering has  holes (1, 3, 4.... SRT cue numbers are supposed to be consecutive; strict  parsers and some editors reject or renumber the file.
+# Regression. Cue numbers came from enumerate() over all segments while blank
+# ones were skipped afterwards, leaving holes in the sequence. SRT numbering is
+# meant to be consecutive, and strict parsers renumber or reject the file.
 def test_srt_numbers_cues_consecutively(segments):
     padded = [segments[0], {"speaker": "SPEAKER_00", "start": 2.5, "end": 2.6, "text": ""},
               segments[1]]
@@ -667,7 +673,9 @@ def test_sweep_on_an_empty_folder_is_a_no_op(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-# Regression. Was: scriba/export.py:252: _sweep globs '{stem}*' and deletes anything with  a known suffix, so it destroys files it could never have written as long as  the name starts with the stem: the user's own '<stem> appunti.md', or the  output of a neighbouring recording called '<stem>-2'. Its own docstrin
+# Regression. _sweep globbed the stem and checked only the suffix, so it deleted
+# files it could never have written: the user's own "<stem> appunti.md", or the
+# outputs of a neighbouring recording called "<stem>-2".
 def test_sweep_keeps_a_file_that_merely_starts_with_the_stem(tmp_path):
     notes = tmp_path / f"{STEM} appunti miei.md"
     neighbour = tmp_path / f"{STEM}-2.md"
@@ -678,7 +686,9 @@ def test_sweep_keeps_a_file_that_merely_starts_with_the_stem(tmp_path):
     assert neighbour.exists(), "another recording's output was deleted"
 
 
-# Regression. Was: scriba/export.py:252: the stem is interpolated into a glob pattern  without escaping, so square brackets in a filename become a character class.  For a recording called 'Memo [2026]' the glob matches nothing, the sweep  silently does nothing, and stale outputs survive next to the fresh ones - 
+# Regression. The stem went into a glob pattern unescaped, so a bracket in a
+# filename became a character class. For "Memo [2026]" the glob matched nothing,
+# the sweep did nothing, and stale outputs survived beside the fresh ones.
 def test_sweep_handles_a_stem_containing_glob_characters(tmp_path):
     bracketed = "Memo [2026]"
     (tmp_path / f"{bracketed}.md").write_text("fresco")
@@ -688,7 +698,9 @@ def test_sweep_handles_a_stem_containing_glob_characters(tmp_path):
     assert not stale.exists(), "stale output survived the sweep"
 
 
-# Regression. Was: scriba/export.py:275 vs 311: write_all sweeps first and validates the  format names last, so a typo in one format wipes the previous outputs of the  formats that were dropped from `keep` and writes the ones before the typo,  then raises. The transcription has already run at that point, so the 
+# Regression. write_all swept and wrote before validating the format names, so
+# one typo deleted the previous outputs of the dropped formats and left the
+# folder half updated, after the transcription had already been paid for.
 def test_write_all_validates_formats_before_deleting_anything(tmp_path, job):
     write_all(tmp_path, STEM, ["md", "txt"], **job)
     before = sorted(p.name for p in tmp_path.iterdir())
