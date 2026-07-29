@@ -221,7 +221,7 @@ struct ContentView: View {
             } else {
                 JobPanel(job: job, loading: engine.isLoadingState)
                     .onAppear {
-                        engine.reload(file: URL(fileURLWithPath: job.sourcePath))
+                        engine.load(jobDir: job.jobDir, source: job.sourcePath)
                     }
             }
         } else {

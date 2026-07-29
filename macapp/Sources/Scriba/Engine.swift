@@ -296,6 +296,48 @@ final class Engine: ObservableObject {
 
     // MARK: - reading the state
 
+    /// Read a job the app already knows the folder of, from the folder.
+    ///
+    /// The state is two JSON files sitting on disk. Asking the engine for them
+    /// meant starting a Python interpreter and importing numpy to hand back
+    /// something already written down: three seconds of it, measured, of which
+    /// the reading itself was two tenths of a millisecond. Opening a recording
+    /// felt broken because it was.
+    ///
+    /// This duplicates no logic. What must not be written twice is how a job is
+    /// derived, and that still happens in exactly one place. Reading a file the
+    /// engine wrote is not deriving anything, and if the shape ever changes the
+    /// decoder fails loudly and the subprocess path below is still there.
+    func load(jobDir: String, source: String) {
+        let dir = URL(fileURLWithPath: jobDir)
+        let fm = FileManager.default
+
+        guard let stateData = fm.contents(atPath: dir.appendingPathComponent("state.json").path),
+              let state = try? JSONDecoder().decode(JobState.self, from: stateData)
+        else {
+            reload(file: URL(fileURLWithPath: source))     // fall back to the engine
+            return
+        }
+
+        let turnsURL = dir.appendingPathComponent("turns.json")
+        let turns = fm.contents(atPath: turnsURL.path)
+            .flatMap { try? JSONDecoder().decode([Turn].self, from: $0) } ?? []
+
+        let outputs = ((try? fm.contentsOfDirectory(atPath: dir.appendingPathComponent("output").path)) ?? [])
+            .sorted()
+            .map { dir.appendingPathComponent("output").appendingPathComponent($0).path }
+
+        let info = JobInfo(
+            jobDir: jobDir, source: source, turns: turns, outputs: outputs,
+            dossier: dir.appendingPathComponent("who-is-who.md").path,
+            audio: dir.appendingPathComponent("audio16k.wav").path,
+            state: state)
+
+        isLoadingState = false
+        self.info = info
+        speakers = Self.buildSpeakers(from: info)
+    }
+
     /// Read the job state, off the main thread.
     ///
     /// This used to run the subprocess and wait for it right here, on the main actor.
