@@ -297,7 +297,11 @@ def to_turns(segments: list[dict], *, max_gap: float = 2.0) -> list[dict]:
     human (and by an LLM) instead of a list of fragments.
     """
     turns: list[dict] = []
-    for seg in segments:
+    # Sorted first, the way _to_turns already does it. Segments arrive in order
+    # from the aligner today, and a caller that hands them over shuffled used to
+    # get back a turn whose end came before its start, which every downstream
+    # timestamp then inherits.
+    for seg in sorted(segments, key=lambda x: float(x.get("start", 0.0))):
         text = (seg.get("text") or "").strip()
         if not text:
             continue

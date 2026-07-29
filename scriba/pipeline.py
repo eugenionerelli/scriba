@@ -258,13 +258,20 @@ class Job:
         guess = lang.detect(self.wav)
         self.state["language"] = guess.language
         self.state["language_confidence"] = guess.confidence
+        self.state["language_agreement"] = guess.agreement
+        self.state["language_strength"] = guess.strength
         self.state["language_note"] = guess.note
         self.state["language_samples"] = guess.samples
         self._save_state()
         flag = "" if guess.reliable else "  ⚠️  "
         # The note can itself contain commas, so it goes in brackets. A second colon
         # would read badly against the "language:" prefix the app matches on.
-        self.report(f"language:{flag} {guess.language} ({guess.confidence:.0%}) [{guess.note}]")
+        # Both halves, because one number cannot say which of them is low. A file
+        # every window agreed on, weakly, and a file the windows split on read the
+        # same when the two are multiplied together first.
+        self.report(f"language:{flag} {guess.language} "
+                    f"({guess.agreement:.0%} of the windows, "
+                    f"model {guess.strength:.0%} sure) [{guess.note}]")
         return guess.language
 
     def transcribe(self, *, force: bool = False) -> list[dict]:

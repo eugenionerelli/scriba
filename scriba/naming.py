@@ -151,6 +151,14 @@ def dossier(profiles: list[SpeakerProfile], *, language: str, title: str) -> str
                          "itself. Listen again and confirm yourself.")
         elif p.registry_note:
             lines.append(f"- Voice registry: no match ({p.registry_note})")
+        else:
+            # A voice with no entry at all. Saying nothing here reads as "checked
+            # and found nothing", which is a different fact from "never checked".
+            # The reason is deliberately not named: this function knows the entry
+            # is missing, not why, and a briefing built without a registry pass at
+            # all would otherwise claim something false about every voice in it.
+            lines.append("- Voice registry: no verdict was recorded for this voice. "
+                         "Nothing here says who it is.")
         if p.name_cues:
             lines.append("- Sentences containing personal names:")
             for c in p.name_cues:

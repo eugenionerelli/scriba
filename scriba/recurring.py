@@ -177,6 +177,19 @@ def suggest_threshold(sims: np.ndarray) -> tuple[float, str]:
     # normal data, which is what the stranger band looks like.
     spread = mad * 1.4826
     if spread < 1e-6:
+        # More than half the pairs sitting on the same value flattens the MAD to
+        # zero, which happens with duplicate copies of one recording in a folder.
+        # The old message said every pair was identical, which is false as soon as
+        # anything stands above them, and the refusal that follows had the reader
+        # looking for the wrong problem.
+        # Anything off the flat value, above or below it. Counting only what sits
+        # above assumed the background is the lower group, which it need not be.
+        outliers = int((np.abs(sims - median) > 1e-6).sum())
+        if outliers:
+            return 0.0, (f"{outliers} of {len(sims)} pairs stand apart from a background "
+                         f"that is otherwise a single value ({median:.2f}), so the "
+                         "spread cannot be measured. Duplicate copies of one "
+                         "recording do this: remove them and run it again")
         return 0.0, "every pair is identical, so there is nothing to separate"
 
     cut = median + 5.0 * spread

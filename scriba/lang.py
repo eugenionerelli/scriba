@@ -25,15 +25,54 @@ import numpy as np
 SAMPLE_RATE = 16_000
 WINDOW_SEC = 30
 
+# Languages this model routinely mistakes for each other, grouped by the family
+# the confusion happens inside. A unanimous vote between neighbours is worth less
+# than a unanimous vote against the whole world, because the losing option was
+# never really in the running: a Spanish conversation classified as Galician in
+# every window comes back as Galician-flavoured Spanish, spelled in a way that
+# reads as a transcription error rather than as the wrong language.
+NEIGHBOURS: list[set[str]] = [
+    {"es", "gl", "pt", "ca", "it"},          # romance, western
+    {"it", "co", "la"},
+    {"da", "no", "nn", "sv"},                # scandinavian
+    {"cs", "sk"},
+    {"hr", "sr", "bs", "sl"},
+    {"ms", "id"},
+    {"hi", "ur", "pa"},
+    {"nl", "af"},
+    {"ru", "uk", "be", "bg"},
+]
+
+# Below this average probability, a unanimous vote between neighbours is reported
+# as a doubt rather than as a decision. Whisper's own scores in this band come out
+# around 0.6 to 0.8 on genuinely ambiguous material, which is exactly where it
+# picks the neighbour.
+NEIGHBOUR_DOUBT = 0.85
+
+
+def neighbours_of(language: str) -> list[str]:
+    """The languages this one gets confused with, without itself."""
+    found: set[str] = set()
+    for family in NEIGHBOURS:
+        if language in family:
+            found |= family
+    found.discard(language)
+    return sorted(found)
+
 
 @dataclass
 class LanguageGuess:
     language: str
-    confidence: float
+    confidence: float                           # agreement * strength
     votes: dict[str, float]
     samples: list[tuple[float, str, float]]     # (timestamp, language, probability)
     reliable: bool
     note: str
+    # The two halves, kept apart because they fail differently and a single
+    # number cannot say which one is low. Agreement is how many windows said the
+    # same thing; strength is how sure those windows were.
+    agreement: float = 0.0
+    strength: float = 0.0
 
 
 def detect(
@@ -105,17 +144,29 @@ def detect(
     strength = mean([p for _, lang, p in samples if lang == winner] or [0.0])
     confidence = agreement * strength
 
-    reliable = agreement >= 0.6 and strength >= 0.5
+    near = neighbours_of(winner)
+    unsure_neighbour = bool(near) and strength < NEIGHBOUR_DOUBT
+
+    reliable = agreement >= 0.6 and strength >= 0.5 and not unsure_neighbour
     if agreement < 0.6:
         note = (f"language unclear between {winner} and {runner_up}: "
                 "this may be a bilingual conversation. Check it by hand.")
     elif strength < 0.5:
-        note = (f"{winner} in every window, but the model was unsure in each of them "
-                f"(average {strength:.0%}). Neighbouring languages get confused here: "
-                "say the language yourself if you know it.")
+        # "in every window" only when it was every window. The runner-up sits in
+        # `samples` next to this sentence, and a note that talks past it is the
+        # same overstatement this module exists to avoid.
+        where = "in most windows" if runner_up else "in every window"
+        note = (f"{winner} {where}, but the model was unsure in each of them "
+                f"(average {strength:.0%}). Say the language yourself if you know it.")
+    elif unsure_neighbour:
+        note = (f"{winner} at {strength:.0%} average, which is not high enough to "
+                f"separate it from {', '.join(near)}. These get confused with each "
+                f"other, and the transcript then comes out in a mixture. Pass "
+                f"--lang if you know which it is.")
     elif runner_up:
         note = f"{winner} prevails; some windows were classified as {runner_up}"
     else:
         note = f"{winner} across every window"
 
-    return LanguageGuess(winner, confidence, dict(votes), samples, reliable, note)
+    return LanguageGuess(winner, confidence, dict(votes), samples, reliable, note,
+                         agreement=agreement, strength=strength)

@@ -41,11 +41,20 @@ class Backend:
     model_kwargs: list = field(default_factory=list)
     windows: list = field(default_factory=list)      # audio handed to detect_language
     read_paths: list = field(default_factory=list)
-    deleted: list = field(default_factory=list)
 
     @property
     def n_windows(self) -> int:
         return len(self.windows)
+
+
+class TooManyWindows(BaseException):
+    """Deliberately not an Exception.
+
+    `detect()` now swallows any Exception a window raises, which is the point of
+    the fix. It also means a fake that ran out of scripted results would be
+    absorbed in silence and the test would go green against the wrong number of
+    windows. A BaseException escapes the module's own except clause.
+    """
 
 
 def install_backends(monkeypatch, *, results, duration=DURATION, sr=SR, channels=1):
@@ -79,7 +88,7 @@ def install_backends(monkeypatch, *, results, duration=DURATION, sr=SR, channels
         def detect_language(self, audio=None):
             back.windows.append(audio)
             if not pending:
-                raise AssertionError(
+                raise TooManyWindows(
                     f"detect_language called {back.n_windows} times, "
                     f"only {len(results)} results were provided"
                 )
@@ -89,9 +98,6 @@ def install_backends(monkeypatch, *, results, duration=DURATION, sr=SR, channels
             language, prob = item
             # faster-whisper returns (language, probability, all_probs)
             return language, prob, {language: prob}
-
-        def __del__(self):
-            back.deleted.append(True)
 
     fw_mod = types.ModuleType("faster_whisper")
     fw_mod.WhisperModel = FakeWhisperModel
@@ -121,10 +127,11 @@ def test_clear_majority_wins(monkeypatch, wav):
 
     assert guess.language == "es"
     assert guess.reliable is True
-    assert guess.confidence > 0.6
     assert back.n_windows == 5
     assert set(guess.votes) == {"es", "it"}
     assert guess.votes["es"] > guess.votes["it"]
+    # agreement 3.68/4.51, strength = mean of the four Spanish windows
+    assert guess.confidence == pytest.approx((3.68 / 4.51) * 0.92)
 
 
 def test_small_talk_in_the_wrong_language_does_not_decide_the_file(monkeypatch, wav):
@@ -146,6 +153,89 @@ def test_small_talk_in_the_wrong_language_does_not_decide_the_file(monkeypatch, 
     assert back.n_windows == 5
 
 
+def test_confidence_is_agreement_times_strength(monkeypatch, wav):
+    """Two separate questions, one number.
+
+    Agreement is how much of the vote the winner took. Strength is how sure the
+    winning windows were on their own terms. A file can have all of one and none
+    of the other, so the reported number is the product and neither half can
+    carry it alone.
+
+    English throughout, to keep the neighbour rule out of a test about the
+    arithmetic.
+    """
+    install_backends(monkeypatch, results=[
+        ("en", 0.80), ("en", 0.80), ("en", 0.80), ("ja", 0.80),
+    ], duration=4.0)
+    guess = lang.detect(wav)
+
+    assert guess.agreement == pytest.approx(0.75)          # 2.4 / 3.2
+    assert guess.strength == pytest.approx(0.80)
+    assert guess.confidence == pytest.approx(guess.agreement * guess.strength)
+    assert guess.confidence == pytest.approx(0.60)
+    assert guess.reliable is True
+
+
+def test_the_two_halves_are_reported_separately(monkeypatch, wav):
+    """One number cannot say which half is low, so both are carried.
+
+    These two files report almost the same confidence and are wrong in opposite
+    ways: the first has every window agreeing but weakly, the second has sure
+    windows that disagree.
+    """
+    install_backends(monkeypatch, results=[("en", 0.55)] * 4, duration=4.0)
+    agreed_but_weak = lang.detect(wav)
+
+    install_backends(monkeypatch, results=[
+        ("en", 0.95), ("ja", 0.95), ("en", 0.95), ("ja", 0.90),
+    ], duration=4.0)
+    sure_but_split = lang.detect(wav)
+
+    assert agreed_but_weak.agreement == pytest.approx(1.0)
+    assert agreed_but_weak.strength == pytest.approx(0.55)
+    assert sure_but_split.agreement == pytest.approx(0.95 * 2 / 3.75)
+    assert sure_but_split.strength == pytest.approx(0.95)
+    # close on the single number, opposite underneath
+    assert agreed_but_weak.confidence == pytest.approx(0.55, abs=0.05)
+    assert sure_but_split.confidence == pytest.approx(0.48, abs=0.05)
+    assert agreed_but_weak.agreement > sure_but_split.agreement
+    assert agreed_but_weak.strength < sure_but_split.strength
+
+
+def test_strength_counts_only_the_windows_that_voted_for_the_winner(monkeypatch, wav):
+    """A confident window for the losing language must not prop up the winner."""
+    install_backends(monkeypatch, results=[
+        ("en", 0.55), ("en", 0.55), ("en", 0.55), ("ja", 0.99),
+    ], duration=4.0)
+    guess = lang.detect(wav)
+
+    assert guess.language == "en"
+    # strength is 0.55, not the 0.66 it would be if the Japanese window counted
+    assert guess.strength == pytest.approx(0.55)
+    assert guess.confidence == pytest.approx((1.65 / 2.64) * 0.55)
+    assert guess.reliable is True
+
+
+def test_a_reliable_file_can_still_report_a_low_number(monkeypatch, wav):
+    """The floor of "reliable": agreement exactly 0.6, strength exactly 0.5.
+
+    The two thresholds are checked separately but reported multiplied, so a file
+    that passes both by a hair comes out at 30%. Worth knowing before anyone
+    reads the header number as a probability.
+    """
+    install_backends(monkeypatch, results=[
+        ("en", 0.5), ("en", 0.5), ("en", 0.5), ("ja", 1.0),
+    ], duration=4.0)
+    guess = lang.detect(wav)
+
+    assert guess.language == "en"
+    assert guess.reliable is True
+    assert guess.agreement == pytest.approx(0.6)
+    assert guess.strength == pytest.approx(0.5)
+    assert guess.confidence == pytest.approx(0.30)
+    assert "prevails" in guess.note        # and no warning in the sentence either
+
+
 def test_windows_are_spread_across_the_whole_file(monkeypatch, wav):
     install_backends(monkeypatch, results=[("es", 0.9)] * 5)
     guess = lang.detect(wav)
@@ -160,32 +250,55 @@ def test_windows_are_spread_across_the_whole_file(monkeypatch, wav):
 
 
 def test_close_vote_is_reported_as_uncertain_not_decided(monkeypatch, wav):
-    """Two languages neck and neck: say so, do not pick one quietly."""
+    """Two languages neck and neck: say so, do not pick one quietly.
+
+    A bilingual conversation is the realistic case, and the honest answer is
+    that there is no single answer.
+    """
     install_backends(monkeypatch, results=[
-        ("es", 0.90), ("it", 0.90), ("es", 0.90), ("it", 0.90),
-    ] + [("it", 0.90)])
+        ("es", 0.90), ("it", 0.90), ("es", 0.90), ("it", 0.90), ("es", 0.55),
+    ])
     guess = lang.detect(wav)
 
-    assert guess.reliable is False
+    assert guess.language == "es"          # a winner is still named
+    assert guess.reliable is False         # but it is not presented as settled
     assert guess.confidence < 0.6
     assert "unclear" in guess.note
     # Both candidates are named, so a human can go and check.
     assert "es" in guess.note and "it" in guess.note
+    assert "bilingual" in guess.note
     assert "hand" in guess.note
 
 
-def test_exact_tie_is_never_reported_as_reliable(monkeypatch, wav):
-    install_backends(monkeypatch, results=[
+def test_an_even_split_between_two_languages_is_never_reliable(monkeypatch, wav):
+    back = install_backends(monkeypatch, results=[
         ("es", 0.9), ("it", 0.9), ("es", 0.9), ("it", 0.9),
-    ])
-    # one window skipped on purpose: 4 usable results, 5 windows requested
+    ], duration=4.0)                       # 4 s: the last window is too short to use
+    guess = lang.detect(wav)
+
+    assert back.n_windows == 4
+    # agreement 0.5, strength 0.9: two sure windows each way is still a coin toss
+    assert guess.confidence == pytest.approx(0.45)
+    assert guess.reliable is False
+    assert "unclear" in guess.note
+
+
+def test_a_three_to_two_split_lands_exactly_on_the_agreement_threshold(monkeypatch, wav):
+    """Documented boundary: three windows against two, all equally confident,
+    is an agreement of exactly 0.6 and the code calls that reliable. It is the
+    closest call that still gets reported without a warning."""
     install_backends(monkeypatch, results=[
         ("es", 0.9), ("it", 0.9), ("es", 0.9), ("it", 0.9), ("es", 0.9),
     ])
     guess = lang.detect(wav)
-    # 3 x 0.9 vs 2 x 0.9 -> 0.6 exactly at the threshold, still the closest call
-    assert guess.confidence == pytest.approx(0.6, abs=1e-9)
+
+    agreement = guess.votes["es"] / sum(guess.votes.values())
+    assert agreement == pytest.approx(0.6, abs=1e-9)
     assert guess.language == "es"
+    assert guess.reliable is True
+    # the reported number is the product, so it sits below the threshold that
+    # let the file through: 0.6 agreement x 0.9 strength
+    assert guess.confidence == pytest.approx(0.54)
 
 
 def test_one_confident_window_is_not_outvoted_by_several_weak_ones(monkeypatch, wav):
@@ -242,10 +355,12 @@ def test_unanimous_file_says_so(monkeypatch, wav):
     guess = lang.detect(wav)
 
     assert guess.language == "it"
-    assert guess.confidence == pytest.approx(1.0)
     assert guess.reliable is True
     assert guess.note == "it across every window"
     assert list(guess.votes) == ["it"]
+    # A unanimous file no longer reports 100%. Agreement is 1.0, and what is
+    # left is how sure the model actually was: 0.98, not certainty by default.
+    assert guess.confidence == pytest.approx(0.98)
 
 
 def test_note_names_the_runner_up_when_the_winner_is_clear(monkeypatch, wav):
@@ -283,7 +398,11 @@ def test_probabilities_are_plain_floats_not_numpy(monkeypatch, wav):
 
     assert type(guess.samples[0][2]) is float
     assert type(guess.votes["es"]) is float
-    json.dumps({"votes": guess.votes, "samples": guess.samples})
+    assert type(guess.agreement) is float
+    assert type(guess.strength) is float
+    assert type(guess.confidence) is float
+    json.dumps({"votes": guess.votes, "samples": guess.samples,
+                "agreement": guess.agreement, "strength": guess.strength})
 
 
 # ---------------------------------------------------------------- degenerate
@@ -296,6 +415,8 @@ def test_audio_too_short_to_sample_returns_an_empty_guess(monkeypatch, wav):
     assert back.n_windows == 0          # the model was never asked
     assert guess.language == ""
     assert guess.confidence == 0.0
+    assert guess.agreement == 0.0       # nothing agreed, rather than agreed on nothing
+    assert guess.strength == 0.0
     assert guess.votes == {}
     assert guess.samples == []
     assert guess.reliable is False
@@ -377,17 +498,12 @@ def test_windows_are_thirty_seconds_of_audio(monkeypatch, wav):
         assert SR <= len(window) <= lang.WINDOW_SEC * SR
 
 
-# ------------------------------------------------------------------- BUG #1
+# ------------------------------------------------ fixed: a window that fails
 
-@pytest.mark.xfail(
-    raises=RuntimeError, strict=True,
-    reason="BUG: lang.py:75 has no per-window error handling. One window that "
-           "raises aborts the whole detection, throwing away the windows that "
-           "already voted, in the one module whose job is to survive a bad "
-           "window.",
-)
+# Regression: a window that raised used to abort the whole detection and throw
+# away the windows that had already voted.
 def test_a_window_that_fails_does_not_crash_the_vote(monkeypatch, wav):
-    install_backends(monkeypatch, results=[
+    back = install_backends(monkeypatch, results=[
         ("es", 0.94),
         ("es", 0.92),
         RuntimeError("failed to decode window"),
@@ -396,37 +512,268 @@ def test_a_window_that_fails_does_not_crash_the_vote(monkeypatch, wav):
     ])
     guess = lang.detect(wav)
 
+    assert back.n_windows == 5           # every window was still attempted
     assert guess.language == "es"
-    assert len(guess.samples) == 4       # the broken window is simply missing
+    assert len(guess.samples) == 4       # the broken one is simply missing
+    assert guess.reliable is True
+    # and it did not sneak into the vote as an abstention either
+    assert guess.votes["es"] == pytest.approx(0.94 + 0.92 + 0.90 + 0.93)
 
 
-# ------------------------------------------------------------------- BUG #2
+def test_every_window_failing_is_not_a_language(monkeypatch, wav):
+    """Nothing to vote on, so nothing is claimed.
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: lang.py:88-92 computes confidence as a share of the vote, not "
-           "as certainty. Five windows that were all guessing (p=0.30, which "
-           "the code itself calls guessing at line 78) agree with each other, "
-           "so confidence is 1.0 and reliable is True. The pipeline then prints "
-           "'100%' and no warning for a file nobody actually identified.",
-)
+    The note is the "too short" one, which is not what happened here: the file
+    was long enough and every window failed. Wrong reason, right refusal.
+    """
+    install_backends(monkeypatch, results=[RuntimeError("no")] * 5)
+    guess = lang.detect(wav)
+
+    assert guess.language == ""
+    assert guess.reliable is False
+    assert guess.confidence == 0.0
+    assert guess.samples == []
+
+
+# ------------------------------------------- fixed: agreement is not certainty
+
+# Regression: five windows that were all guessing agreed with each other, so the
+# share-of-the-vote confidence was 1.0 and the header said 100%.
 def test_a_file_where_every_window_was_guessing_is_not_reliable(monkeypatch, wav):
     install_backends(monkeypatch, results=[("it", 0.30)] * 5)
     guess = lang.detect(wav)
 
     assert guess.reliable is False
     assert guess.confidence < 0.6
+    # unanimous, so agreement is still 1.0: it is strength that fails the file
+    assert guess.votes["it"] == pytest.approx(5 * 0.30 * 0.25)
+    assert guess.confidence == pytest.approx(0.30)
 
 
-def test_unanimous_guessing_currently_reports_full_confidence(monkeypatch, wav):
-    """Pins the behaviour BUG #2 describes, so the damage is visible and any
-    fix has to come through the xfail above rather than by accident."""
+def test_the_unanimous_but_unsure_note_says_what_happened(monkeypatch, wav):
+    """The sentence is the whole point of the fix.
+
+    Unanimity and certainty are different things, and this is the case where
+    they part company. The reader is told the windows agreed, that agreeing is
+    not the same as knowing, what the average actually was, and what to do
+    about it.
+    """
     install_backends(monkeypatch, results=[("it", 0.30)] * 5)
     guess = lang.detect(wav)
 
-    assert guess.confidence == pytest.approx(1.0)
+    assert guess.note == (
+        "it in every window, but the model was unsure in each of them "
+        "(average 30%). Say the language yourself if you know it."
+    )
+    assert guess.reliable is False
+    # and emphatically not the sentence for a file that was actually identified
+    assert "across every window" not in guess.note
+
+
+# Regression: this branch is reached on mixed votes too, and the note used to
+# say "in every window" about a file where a window had said something else.
+def test_the_unsure_note_does_not_claim_windows_it_did_not_get(monkeypatch, wav):
+    install_backends(monkeypatch, results=[
+        ("es", 0.45), ("es", 0.45), ("es", 0.45), ("it", 0.40),
+    ], duration=4.0)
+    guess = lang.detect(wav)
+
+    assert guess.language == "es"
+    assert guess.reliable is False
+    assert {l for _t, l, _p in guess.samples} == {"es", "it"}   # not unanimous
+    assert "in every window" not in guess.note
+    assert guess.note.startswith("es in most windows")
+
+
+def test_the_unsure_note_says_every_window_only_when_it_was_every_window(monkeypatch, wav):
+    """The other side of the same sentence: unanimous really does say so."""
+    install_backends(monkeypatch, results=[("es", 0.45)] * 4, duration=4.0)
+    guess = lang.detect(wav)
+
+    assert {l for _t, l, _p in guess.samples} == {"es"}
+    assert guess.note.startswith("es in every window")
+
+
+def test_the_worst_neighbour_files_are_told_the_least(monkeypatch, wav):
+    """Documented, and the one thing about the new rule I would change.
+
+    The strength < 0.5 branch is checked before the neighbour branch, so a
+    Spanish file averaging 0.30 gets the generic sentence and is never told
+    which languages it is being confused with, while the same file at 0.80 is
+    told exactly. The advice gets less specific as the evidence gets worse.
+    """
+    install_backends(monkeypatch, results=[("es", 0.30)] * 5)
+    very_weak = lang.detect(wav)
+    install_backends(monkeypatch, results=[("es", 0.80)] * 5)
+    less_weak = lang.detect(wav)
+
+    assert very_weak.reliable is False and less_weak.reliable is False
+    assert "gl" in less_weak.note              # named for the better file
+    assert "gl" not in very_weak.note          # and not for the worse one
+
+
+# ==========================================================================
+# the neighbour rule: unanimity between languages that get confused with each
+# other is not evidence, because the losing option was never in the running
+# ==========================================================================
+
+def test_neighbours_of_is_symmetric_and_excludes_itself():
+    for family in lang.NEIGHBOURS:
+        for language in family:
+            near = lang.neighbours_of(language)
+            assert language not in near
+            assert near == sorted(near)
+            for other in family:
+                if other != language:
+                    assert other in near
+                    assert language in lang.neighbours_of(other)
+
+
+def test_neighbours_of_unions_every_family_the_language_is_in():
+    # "it" sits in the western romance family and in the italic one
+    assert lang.neighbours_of("it") == ["ca", "co", "es", "gl", "la", "pt"]
+    assert lang.neighbours_of("es") == ["ca", "gl", "it", "pt"]
+
+
+@pytest.mark.parametrize("language", ["en", "ja", "zh", "ar", "he", "", "xx"])
+def test_a_language_with_no_neighbours_has_none(language):
+    assert lang.neighbours_of(language) == []
+
+
+def test_a_language_with_no_neighbours_is_not_held_to_the_higher_bar(monkeypatch, wav):
+    """English at 0.60 is reliable; the neighbour bar never applies to it."""
+    install_backends(monkeypatch, results=[("en", 0.60)] * 5)
+    guess = lang.detect(wav)
+
+    assert lang.neighbours_of("en") == []
+    assert guess.strength == pytest.approx(0.60)
+    assert guess.strength < lang.NEIGHBOUR_DOUBT      # under the bar, and it does not matter
     assert guess.reliable is True
-    assert max(p for _t, _l, p in guess.samples) == pytest.approx(0.30)
+    assert guess.note == "en across every window"
+
+
+def test_a_neighbour_language_just_under_the_bar_is_not_reliable(monkeypatch, wav):
+    install_backends(monkeypatch, results=[("es", 0.84)] * 5)
+    guess = lang.detect(wav)
+
+    assert guess.agreement == pytest.approx(1.0)      # every window agreed
+    assert guess.strength == pytest.approx(0.84)
+    assert guess.reliable is False                    # and it still is not enough
+
+
+def test_a_neighbour_language_just_over_the_bar_is_reliable(monkeypatch, wav):
+    install_backends(monkeypatch, results=[("es", 0.86)] * 5)
+    guess = lang.detect(wav)
+
+    assert guess.strength == pytest.approx(0.86)
+    assert guess.reliable is True
+    assert guess.note == "es across every window"
+
+
+def test_the_bar_itself_passes(monkeypatch, wav):
+    """Exactly NEIGHBOUR_DOUBT is doubt resolved, not doubt confirmed."""
+    install_backends(monkeypatch, results=[("es", lang.NEIGHBOUR_DOUBT)] * 5)
+    guess = lang.detect(wav)
+
+    assert guess.strength == pytest.approx(lang.NEIGHBOUR_DOUBT)
+    assert guess.reliable is True
+
+
+def test_the_neighbour_note_names_every_neighbour_sorted(monkeypatch, wav):
+    install_backends(monkeypatch, results=[("es", 0.73)] * 5)
+    guess = lang.detect(wav)
+
+    assert guess.note == (
+        "es at 73% average, which is not high enough to separate it from "
+        "ca, gl, it, pt. These get confused with each other, and the "
+        "transcript then comes out in a mixture. Pass --lang if you know "
+        "which it is."
+    )
+
+
+def test_the_neighbour_note_spans_both_families_of_a_language(monkeypatch, wav):
+    """Italian is in two families, and the reader is told about both."""
+    install_backends(monkeypatch, results=[("it", 0.70)] * 5)
+    guess = lang.detect(wav)
+
+    assert "ca, co, es, gl, la, pt" in guess.note
+    assert guess.reliable is False
+
+
+def test_the_neighbour_rule_moves_reliable_and_leaves_confidence_alone(monkeypatch, wav):
+    """The rule is about what we are willing to claim, not about the arithmetic.
+
+    Same votes, same probabilities, one a neighbour language and one not: the
+    numbers come out identical and only the verdict differs.
+    """
+    install_backends(monkeypatch, results=[("es", 0.73)] * 5)
+    neighbour = lang.detect(wav)
+    install_backends(monkeypatch, results=[("en", 0.73)] * 5)
+    loner = lang.detect(wav)
+
+    assert neighbour.confidence == pytest.approx(loner.confidence)
+    assert neighbour.agreement == pytest.approx(loner.agreement)
+    assert neighbour.strength == pytest.approx(loner.strength)
+    assert neighbour.confidence == pytest.approx(0.73)
+    assert neighbour.reliable is False
+    assert loner.reliable is True
+
+
+def test_the_galician_recordings(monkeypatch, wav):
+    """The case the rule was written for.
+
+    Spanish conversations that came back as Galician, unanimous in every window,
+    average probability in the 0.6 to 0.7 band. Nothing in the vote was wrong:
+    the windows really did agree. What was wrong was calling that a result.
+    """
+    install_backends(monkeypatch, results=[
+        ("gl", 0.63), ("gl", 0.71), ("gl", 0.66), ("gl", 0.73), ("gl", 0.69),
+    ])
+    guess = lang.detect(wav)
+
+    assert guess.language == "gl"
+    assert guess.agreement == pytest.approx(1.0)       # unanimous, as they were
+    assert guess.reliable is False                     # and no longer believed
+    assert "es" in guess.note
+    assert "--lang" in guess.note
+    # the old contract would have called this a 100% certain identification
+    assert guess.confidence < 0.75
+
+
+def test_a_neighbour_language_can_still_be_identified(monkeypatch, wav):
+    """The rule must not make Spanish unreportable, only unreported when weak."""
+    install_backends(monkeypatch, results=[("es", 0.97)] * 5)
+    guess = lang.detect(wav)
+
+    assert guess.language == "es"
+    assert guess.reliable is True
+    assert guess.note == "es across every window"
+
+
+def test_the_neighbour_bar_applies_to_a_split_vote_too(monkeypatch, wav):
+    """Not only unanimous files: the winner's strength is what is measured."""
+    install_backends(monkeypatch, results=[
+        ("pt", 0.80), ("pt", 0.80), ("pt", 0.80), ("gl", 0.75),
+    ], duration=4.0)
+    guess = lang.detect(wav)
+
+    assert guess.language == "pt"
+    assert guess.agreement > 0.6
+    assert guess.reliable is False
+    assert "gl" in guess.note
+
+
+def test_the_unsure_note_reports_the_average_it_measured(monkeypatch, wav):
+    """The percentage in the sentence is the mean of the winning windows, so it
+    has to move with them rather than being decoration."""
+    install_backends(monkeypatch, results=[
+        ("it", 0.20), ("it", 0.30), ("it", 0.40), ("it", 0.50), ("it", 0.60),
+    ])
+    guess = lang.detect(wav)
+
+    assert "(average 40%)" in guess.note          # mean of 0.2 .. 0.6
+    assert guess.reliable is False                # 0.40 is still under the bar
+    assert guess.confidence == pytest.approx(0.40)
 
 
 # ==========================================================================
@@ -444,7 +791,11 @@ def test_detect_has_no_language_override():
 
 
 def _bare_job(tmp_path, language):
-    """A Job without __init__: no ~/.scriba, no job folder, no source file."""
+    """A Job without __init__: no ~/.scriba, no job folder, no source file.
+
+    Saving is stubbed out as well. What is under test here is the decision, not
+    how the job folder is written, which belongs to pipeline's own tests.
+    """
     from scriba.config import Settings
     from scriba.pipeline import Job
 
@@ -455,6 +806,8 @@ def _bare_job(tmp_path, language):
     job.state_path = tmp_path / "state.json"
     job.wav = tmp_path / "audio16k.wav"
     job.report = lambda _m: None
+    job.saved = []
+    job._save_state = lambda: job.saved.append(dict(job.state))
     return job
 
 
@@ -467,9 +820,10 @@ def test_an_explicitly_requested_language_short_circuits_detection(tmp_path, mon
 
     assert job.detect_language() == "es"
     assert job.state["language"] == "es"
+    # and the file says the language was chosen, not measured
     assert job.state["language_note"] == "set by hand"
-    # and the choice is recorded, so the document can say where the date came from
-    assert json.loads(job.state_path.read_text())["language"] == "es"
+    assert job.state.get("language_confidence") is None
+    assert job.saved and job.saved[-1]["language"] == "es"
 
 
 def test_auto_still_runs_the_vote(tmp_path, monkeypatch):
@@ -477,7 +831,8 @@ def test_auto_still_runs_the_vote(tmp_path, monkeypatch):
 
     def fake_detect(path, **kw):
         calls.append(path)
-        return lang.LanguageGuess("es", 0.82, {"es": 3.7, "it": 0.8}, [], True, "es prevails")
+        return lang.LanguageGuess("es", 0.82, {"es": 3.7, "it": 0.8}, [], True,
+                                  "es prevails", agreement=0.90, strength=0.91)
 
     monkeypatch.setattr("scriba.lang.detect", fake_detect)
     job = _bare_job(tmp_path, "auto")
@@ -486,6 +841,30 @@ def test_auto_still_runs_the_vote(tmp_path, monkeypatch):
     assert calls == [job.wav]
     assert job.state["language_confidence"] == pytest.approx(0.82)
     assert job.state["language_note"] == "es prevails"
+    # both halves are kept, so a later reader can tell which one was low
+    assert job.state["language_agreement"] == pytest.approx(0.90)
+    assert job.state["language_strength"] == pytest.approx(0.91)
+
+
+def test_the_report_line_shows_both_halves(tmp_path, monkeypatch):
+    """A weak file and a split file used to print the same single number."""
+    lines = []
+
+    def fake_detect(path, **kw):
+        return lang.LanguageGuess("gl", 0.68, {"gl": 3.4}, [], False,
+                                  "gl at 68% average, ... Pass --lang if you know which it is.",
+                                  agreement=1.0, strength=0.68)
+
+    monkeypatch.setattr("scriba.lang.detect", fake_detect)
+    job = _bare_job(tmp_path, "auto")
+    job.report = lines.append
+
+    job.detect_language()
+    line = [l for l in lines if l.startswith("language:")][-1]   # after the progress line
+
+    assert "100% of the windows" in line
+    assert "model 68% sure" in line
+    assert "⚠️" in line                      # and it is flagged, not just described
 
 
 # ==========================================================================
@@ -518,11 +897,30 @@ def test_no_encoder_tag_is_no_device():
     assert audio._recorder("") == ""
 
 
-def test_a_padded_generic_tag_slips_through(monkeypatch):
+def test_a_padded_generic_tag_slips_through():
     """Documented gap, low severity: the filter matches on a prefix and the tag
     is never stripped, so a leading space is enough to get 'Lavf' into the
     document as a recording device."""
     assert audio._recorder(" Lavf62.3.100") == " Lavf62.3.100"
+
+
+# ==========================================================================
+# audio: finding the binaries
+# ==========================================================================
+
+def test_the_binaries_are_looked_up_on_the_path(monkeypatch):
+    monkeypatch.setattr(audio.shutil, "which", lambda name: f"/opt/homebrew/bin/{name}")
+
+    assert audio._ffmpeg() == "/opt/homebrew/bin/ffmpeg"
+    assert audio._ffprobe() == "/opt/homebrew/bin/ffprobe"
+
+
+def test_ffprobe_is_optional_but_ffmpeg_is_not(monkeypatch):
+    monkeypatch.setattr(audio.shutil, "which", lambda _name: None)
+
+    assert audio._ffprobe() is None          # probe() degrades instead of raising
+    with pytest.raises(audio.FFmpegMissing):
+        audio._ffmpeg()                      # nothing can be converted without it
 
 
 # ==========================================================================
@@ -662,16 +1060,11 @@ def test_probe_without_ffprobe_installed_degrades(monkeypatch, tmp_path):
     assert info.created == ""
 
 
-# ------------------------------------------------------------------- BUG #3
+# ------------------------------------------------- fixed: ffprobe writes 'N/A'
 
-@pytest.mark.xfail(
-    raises=ValueError, strict=True,
-    reason="BUG: audio.py:80-82 casts the ffprobe fields without guarding the "
-           "'N/A' that ffprobe writes when a container carries no duration or "
-           "no sample rate. probe() then dies with \"could not convert string "
-           "to float: 'N/A'\", which is exactly the bare cast error the "
-           "returncode branch above was written to replace.",
-)
+# Regression: a bare float()/int() on the "N/A" that ffprobe writes for a
+# container with no duration killed probe() with an unreadable cast error, the
+# very thing the friendly message above exists to replace.
 def test_probe_survives_a_container_with_no_duration(monkeypatch, tmp_path):
     src = tmp_path / "stream.aac"
     src.write_bytes(b"\0")
@@ -685,6 +1078,21 @@ def test_probe_survives_a_container_with_no_duration(monkeypatch, tmp_path):
     info = audio.probe(src)
     assert info.duration == 0.0
     assert info.sample_rate == 0
+    assert info.codec == "aac"          # the rest of the probe still came through
+    assert info.channels == 1
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("742.5", 742.5),
+    (742.5, 742.5),
+    ("44100", 44100.0),
+    ("N/A", -1.0),
+    ("", -1.0),
+    (None, -1.0),
+    ("unknown", -1.0),
+])
+def test_number_falls_back_instead_of_raising(value, expected):
+    assert audio._number(value, -1.0) == expected
 
 
 # ==========================================================================
