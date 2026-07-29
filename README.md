@@ -335,8 +335,15 @@ installed `scriba`, and both fields say whether what you typed is there. The sec
 field, the package folder, only matters when you are running from a clone; a pip
 install can leave it alone.
 
-A run can be stopped from the progress panel, and quitting the app stops the engine
-with it.
+A run can be stopped from the strip under the sidebar or from the Transcribe menu,
+and quitting the app stops the engine with it. The keys are the ones a Mac
+application puts them on: `cmd O` to add recordings, `cmd T` to start the queue,
+`cmd .` to stop, `cmd R` to re-read the list.
+
+The window stays usable while a transcription runs. That took saying twice, because
+the first version handed the whole detail pane to the progress display, and a
+transcription lasts about as long as the recording does. The strip says what is
+happening from wherever you are in the app; the pane is yours.
 
 ## Speed, and why it is what it is
 
