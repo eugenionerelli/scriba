@@ -9,6 +9,12 @@ struct ScribaApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing: .newItem) { }
+            if WindowShot.isEnabled {
+                CommandGroup(after: .saveItem) {
+                    Button("Save window as PNG") { WindowShot.save() }
+                        .keyboardShortcut("p", modifiers: [.command, .option])
+                }
+            }
         }
 
         Settings {
