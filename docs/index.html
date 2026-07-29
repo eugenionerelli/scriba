@@ -474,57 +474,6 @@ window.</pre>
   </div>
 </section>
 
-<!-- the language failure -->
-<section class="paper">
-  <div class="wrap">
-    <p class="eyebrow rise">Why it exists</p>
-    <h2 class="rise" style="max-width:18ch">The wrong language raises no error. It invents a text.</h2>
-    <p class="lede rise" style="margin-top:1.5rem">
-      A recording that was in Spanish, handed to a script with <code>--language it</code>
-      written into it. Whisper neither failed nor warned. It returned fluent, punctuated
-      Italian that nobody in the room had said.
-    </p>
-    <p class="rise">
-      Nothing on the screen looks wrong. The text reads cleanly, so you quote it and
-      reason on top of it for weeks before anything gives the game away.
-    </p>
-
-    <div class="false-friends rise">
-      <div class="ff"><b>salir</b><span class="arrow">heard as</span><b>salire</b><span>to leave becomes to go up</span></div>
-      <div class="ff"><b>carta</b><span class="arrow">heard as</span><b>carta</b><span>letter becomes paper</span></div>
-      <div class="ff"><b>burro</b><span class="arrow">heard as</span><b>burro</b><span>donkey becomes butter</span></div>
-      <div class="ff"><b>éxito</b><span class="arrow">heard as</span><b>esito</b><span>success becomes outcome</span></div>
-    </div>
-
-    <p class="rise" style="margin-top:1.5rem;font-size:0.9rem;color:#6B6355;max-width:60ch">
-      Two of those four are spelled the same in both languages, so nothing is
-      misheard: the damage is done in the translation. They are the textbook pairs,
-      shown for the shape of the failure. A real recording gets it in every sentence
-      at once.
-    </p>
-
-    <blockquote class="pull rise">
-      It does this to every sentence at once, and each one comes out plausible.
-      <cite>Left alone, Whisper decides the language from the first 30 seconds, which in a real conversation is small talk.</cite>
-    </blockquote>
-
-    <p class="rise" style="margin-top:clamp(2rem,4vw,3rem)">
-      scriba listens at five points spread across the whole file and takes a vote,
-      counting a confident window for more than a hesitant one. A close vote is
-      reported to you as a doubt instead of being settled in silence.
-    </p>
-    <p class="rise">
-      So is a vote that was unanimous and weak. Two Spanish recordings here came back
-      as Galician, agreed on by every one of the five windows, and those transcripts
-      are a hybrid of the two languages. Agreement on its own is a share: windows that
-      are all wrong together agree perfectly. The languages this model mixes up are
-      listed by name now, and a winner with close neighbours has to clear a higher bar
-      before the file counts as decided. Replayed under the new rule, all four
-      recordings from that afternoon are held back for you to confirm.
-    </p>
-  </div>
-</section>
-
 <!-- how a run goes -->
 <section>
   <div class="wrap">
@@ -614,7 +563,7 @@ window.</pre>
 </section>
 
 <!-- telemetry -->
-<section class="tight">
+<section class="paper tight">
   <div class="wrap">
     <p class="eyebrow rise">One thing worth knowing</p>
     <div class="split top">
@@ -728,6 +677,14 @@ scriba jobs list</pre>
           alignment stage puts a timestamp on each word, which is what lets scriba cut the
           transcript where the speaker changes: on the test file, 41 turns of conversation
           out of 16 blocks that each held more than one person.
+        </p>
+        <p>
+          The language is worked out from five points spread across the file rather
+          than from the first thirty seconds, and the result is reported as a doubt
+          when the samples disagree, or when they agree without conviction between
+          two languages this model is known to mix up. Getting that wrong is quiet:
+          Whisper does not fail on the wrong language, it translates by ear and
+          returns something fluent that nobody said.
         </p>
         <p style="color:var(--text-dim)">
           It is an afternoon's worth of code, written in one sitting and then read and
