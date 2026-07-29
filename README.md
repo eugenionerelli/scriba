@@ -82,8 +82,14 @@ reason on top of it for weeks.
 
 Left alone, Whisper picks the language from the first 30 seconds, which in a real
 conversation is small talk. [`lang.py`](scriba/lang.py) samples five windows across the
-whole file and votes, weighting each window by confidence. When the vote is close it
-says so instead of choosing in silence.
+whole file and votes, weighting each window by confidence, and says so when the vote is
+close instead of choosing in silence.
+
+It also says so when the windows agree and none of them was sure. Agreement on its own
+used to be the whole confidence, which is a share: five windows that all say Galician
+at 30% agree perfectly, and the file came out reported at 100% confidence. Now the
+strength of the winning windows is part of the number, and a unanimous shrug is called
+one.
 
 ### 2. Speaker labels restart from zero every time
 
