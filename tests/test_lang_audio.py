@@ -119,18 +119,23 @@ def wav(tmp_path):
 # lang.detect(): the vote
 # ==========================================================================
 
+# The vote is arithmetic, so these use a pair of languages that are not on the
+# neighbour list. With two romance languages the neighbour rules fire and the
+# test would be measuring those instead. The romance cases have their own
+# section further down.
+
 def test_clear_majority_wins(monkeypatch, wav):
     back = install_backends(monkeypatch, results=[
-        ("es", 0.94), ("es", 0.91), ("es", 0.88), ("it", 0.83), ("es", 0.95),
+        ("en", 0.94), ("en", 0.91), ("en", 0.88), ("ja", 0.83), ("en", 0.95),
     ])
     guess = lang.detect(wav)
 
-    assert guess.language == "es"
+    assert guess.language == "en"
     assert guess.reliable is True
     assert back.n_windows == 5
-    assert set(guess.votes) == {"es", "it"}
-    assert guess.votes["es"] > guess.votes["it"]
-    # agreement 3.68/4.51, strength = mean of the four Spanish windows
+    assert set(guess.votes) == {"en", "ja"}
+    assert guess.votes["en"] > guess.votes["ja"]
+    # agreement 3.68/4.51, strength = mean of the four English windows
     assert guess.confidence == pytest.approx((3.68 / 4.51) * 0.92)
 
 
@@ -138,17 +143,17 @@ def test_small_talk_in_the_wrong_language_does_not_decide_the_file(monkeypatch, 
     """The failure this module exists for.
 
     Whisper looks at the first thirty seconds. Here those thirty seconds are
-    Italian small talk and the conversation that follows is Spanish. Sampling
-    the first window alone gets it wrong; the vote gets it right.
+    small talk in one language and the conversation that follows is in another.
+    Sampling the first window alone gets it wrong; the vote gets it right.
     """
     back = install_backends(monkeypatch, results=[
-        ("it", 0.87),                                   # "ciao, come stai" at the top
-        ("es", 0.96), ("es", 0.97), ("es", 0.95), ("es", 0.96),
+        ("en", 0.87),                                   # "so, shall we start" at the top
+        ("ja", 0.96), ("ja", 0.97), ("ja", 0.95), ("ja", 0.96),
     ])
     guess = lang.detect(wav)
 
-    assert guess.samples[0][1] == "it"     # the first window really did say Italian
-    assert guess.language == "es"          # and it did not decide the file
+    assert guess.samples[0][1] == "en"     # the first window really did say English
+    assert guess.language == "ja"          # and it did not decide the file
     assert guess.reliable is True
     assert back.n_windows == 5
 
@@ -288,13 +293,13 @@ def test_a_three_to_two_split_lands_exactly_on_the_agreement_threshold(monkeypat
     is an agreement of exactly 0.6 and the code calls that reliable. It is the
     closest call that still gets reported without a warning."""
     install_backends(monkeypatch, results=[
-        ("es", 0.9), ("it", 0.9), ("es", 0.9), ("it", 0.9), ("es", 0.9),
+        ("en", 0.9), ("ja", 0.9), ("en", 0.9), ("ja", 0.9), ("en", 0.9),
     ])
     guess = lang.detect(wav)
 
-    agreement = guess.votes["es"] / sum(guess.votes.values())
+    agreement = guess.votes["en"] / sum(guess.votes.values())
     assert agreement == pytest.approx(0.6, abs=1e-9)
-    assert guess.language == "es"
+    assert guess.language == "en"
     assert guess.reliable is True
     # the reported number is the product, so it sits below the threshold that
     # let the file through: 0.6 agreement x 0.9 strength
@@ -308,14 +313,14 @@ def test_one_confident_window_is_not_outvoted_by_several_weak_ones(monkeypatch, 
     quarter. Without that discount the four weak windows would win 1.80 to 0.97.
     """
     install_backends(monkeypatch, results=[
-        ("it", 0.45), ("it", 0.45), ("es", 0.97), ("it", 0.45), ("it", 0.45),
+        ("ja", 0.45), ("ja", 0.45), ("en", 0.97), ("ja", 0.45), ("ja", 0.45),
     ])
     guess = lang.detect(wav)
 
-    assert guess.language == "es"
-    assert guess.votes["es"] == pytest.approx(0.97)
-    assert guess.votes["it"] == pytest.approx(4 * 0.45 * 0.25)
-    # sanity: unweighted, Italian would have won
+    assert guess.language == "en"
+    assert guess.votes["en"] == pytest.approx(0.97)
+    assert guess.votes["ja"] == pytest.approx(4 * 0.45 * 0.25)
+    # sanity: unweighted, the four weak windows would have won
     assert 4 * 0.45 > 0.97
     assert guess.reliable is True
 
@@ -365,13 +370,13 @@ def test_unanimous_file_says_so(monkeypatch, wav):
 
 def test_note_names_the_runner_up_when_the_winner_is_clear(monkeypatch, wav):
     install_backends(monkeypatch, results=[
-        ("it", 0.97), ("it", 0.96), ("it", 0.95), ("es", 0.92), ("it", 0.94),
+        ("en", 0.97), ("en", 0.96), ("en", 0.95), ("ja", 0.92), ("en", 0.94),
     ])
     guess = lang.detect(wav)
 
     assert guess.reliable is True
     assert "prevails" in guess.note
-    assert "es" in guess.note          # the reader is told the file was not unanimous
+    assert "ja" in guess.note          # the reader is told the file was not unanimous
 
 
 def test_samples_carry_timestamp_language_and_probability(monkeypatch, wav):
@@ -761,6 +766,149 @@ def test_the_neighbour_note_spans_both_families_of_a_language(monkeypatch, wav):
     assert ", ".join(lang.neighbours_of("it")) in guess.note
     assert "co" in guess.note and "es" in guess.note
     assert guess.reliable is False
+
+
+# Regression: this used to reach the mild "prevails" note. Confident windows
+# that disagree between two languages that get confused with each other passed
+# the neighbour bar, because strength is measured over the winner's windows
+# alone and never noticed what the losing windows had said.
+def test_a_confident_split_between_two_neighbours_is_refused(monkeypatch, wav):
+    install_backends(monkeypatch, results=[
+        ("it", 0.90), ("es", 0.90), ("it", 0.90), ("es", 0.90), ("it", 0.90),
+    ])
+    guess = lang.detect(wav)
+
+    assert "es" in lang.neighbours_of("it")       # the two are known to collide
+    assert guess.language == "it"
+    assert guess.agreement == pytest.approx(0.6)
+    assert guess.strength == pytest.approx(0.90)  # each window was sure of itself
+    assert guess.reliable is False                # and the file is still refused
+    assert guess.note == (
+        "the windows split between it and es, which get confused with each "
+        "other. That is more often one language the model cannot pin down than "
+        "two languages in the room. Pass --lang if you know which it is."
+    )
+
+
+def test_the_split_rule_ignores_how_strong_the_windows_were(monkeypatch, wav):
+    """No strength gets a neighbour split through: it is the split that is the
+    evidence, not the confidence of either side."""
+    for probability in (0.90, 0.95, 0.99, 1.0):
+        install_backends(monkeypatch, results=[
+            ("it", probability), ("es", probability), ("it", probability),
+            ("it", probability), ("it", probability),
+        ])
+        guess = lang.detect(wav)
+
+        assert guess.strength == pytest.approx(probability)
+        assert guess.agreement > 0.6
+        assert guess.reliable is False, f"a split at {probability} got through"
+
+
+def test_a_split_against_a_language_that_is_not_a_neighbour_still_prevails(monkeypatch, wav):
+    """The boundary that stops this rule swallowing every mixed file.
+
+    Spanish against English is a real disagreement between two languages nobody
+    confuses, so it stays a "prevails" and stays reliable. Only a runner-up on
+    the winner's own list turns a split into a doubt.
+    """
+    install_backends(monkeypatch, results=[
+        ("es", 0.90), ("es", 0.90), ("es", 0.90), ("en", 0.90), ("es", 0.90),
+    ])
+    guess = lang.detect(wav)
+
+    assert "en" not in lang.neighbours_of("es")
+    assert guess.language == "es"
+    assert guess.reliable is True
+    assert guess.note == "es prevails; some windows were classified as en"
+
+
+def test_the_split_note_wins_over_the_neighbour_note_and_names_the_runner_up(monkeypatch, wav):
+    """Both rules apply here: Spanish under the bar, and the runner-up Italian.
+
+    The split sentence goes first because it is the more specific of the two.
+    The reader is told which language the windows actually disagreed on rather
+    than being handed the whole romance family to choose from.
+    """
+    install_backends(monkeypatch, results=[
+        ("es", 0.70), ("es", 0.70), ("es", 0.70), ("it", 0.70), ("es", 0.70),
+    ])
+    guess = lang.detect(wav)
+
+    # both conditions are live
+    assert guess.strength < lang.NEIGHBOUR_DOUBT
+    assert "it" in lang.neighbours_of("es")
+
+    assert guess.note.startswith("the windows split between es and it")
+    # the family list stays out of it (matched as the joined list, since two
+    # letter codes turn up inside ordinary words: "ca" lives in "cannot")
+    assert ", ".join(lang.neighbours_of("es")) not in guess.note
+    assert "not high enough to separate it" not in guess.note
+    assert guess.reliable is False
+
+
+def test_a_weak_and_split_file_is_told_it_was_weak_first(monkeypatch, wav):
+    """Both weak and split. The weak sentence wins, and that is the right call:
+    an average of 30% is the more damning fact, and because a split can only
+    happen against a neighbour, the runner-up is named in that sentence anyway.
+    """
+    install_backends(monkeypatch, results=[
+        ("es", 0.30), ("es", 0.30), ("es", 0.30), ("it", 0.30), ("es", 0.30),
+    ])
+    guess = lang.detect(wav)
+
+    assert guess.strength == pytest.approx(0.30)          # weak
+    assert guess.samples[3][1] == "it"                    # and split
+    assert "unsure in each of them" in guess.note         # weak sentence wins
+    assert "(average 30%)" in guess.note
+    assert "it" in guess.note                             # runner-up named regardless
+    assert guess.reliable is False
+
+
+def test_an_even_split_between_neighbours_gets_the_bilingual_reading(monkeypatch, wav):
+    """Documented, and the one thing left in the branch order I would change.
+
+    The unclear branch is checked first and does not look at the neighbour list,
+    so the same two languages get opposite explanations either side of an
+    agreement of 0.6. Four windows split two and two are called a possible
+    bilingual conversation; five split three and two are called one language the
+    model cannot pin down. The more even the split, the more the note leans
+    towards two languages being in the room, which is backwards: an even split
+    between neighbours is the stronger evidence of the model oscillating.
+    """
+    install_backends(monkeypatch, results=[
+        ("es", 0.9), ("it", 0.9), ("es", 0.9), ("it", 0.9),
+    ], duration=4.0)
+    even = lang.detect(wav)
+
+    install_backends(monkeypatch, results=[
+        ("es", 0.9), ("it", 0.9), ("es", 0.9), ("it", 0.9), ("es", 0.9),
+    ])
+    uneven = lang.detect(wav)
+
+    assert even.agreement < uneven.agreement
+    assert "bilingual conversation" in even.note
+    assert "than two languages in the room" in uneven.note
+    # both refused, so only the explanation differs
+    assert even.reliable is False and uneven.reliable is False
+
+
+def test_a_split_is_only_a_split_against_the_runner_up(monkeypatch, wav):
+    """A neighbour that came third does not trigger the rule.
+
+    Only the runner-up is checked, so a stray Galician window under an English
+    runner-up leaves the file on the ordinary branch.
+    """
+    install_backends(monkeypatch, results=[
+        ("es", 0.95), ("es", 0.95), ("es", 0.95), ("en", 0.90), ("gl", 0.55),
+    ])
+    guess = lang.detect(wav)
+
+    assert guess.language == "es"
+    assert sorted(guess.votes, key=guess.votes.get, reverse=True) == ["es", "en", "gl"]
+    assert "gl" in lang.neighbours_of("es")       # present, but not the runner-up
+    assert guess.reliable is True
+    assert "prevails" in guess.note
 
 
 def test_the_neighbour_rule_moves_reliable_and_leaves_confidence_alone(monkeypatch, wav):

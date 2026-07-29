@@ -36,7 +36,7 @@ WINDOW_SEC = 30
 # warning line, since `reliable` gates nothing, so err towards including a pair
 # rather than leaving it out.
 NEIGHBOURS: list[set[str]] = [
-    {"es", "gl", "pt", "ca", "it", "oc"},    # romance, iberian and italian
+    {"es", "gl", "pt", "ca", "it", "oc", "ro"},   # romance
     {"fr", "oc", "ca"},                      # and the other side of the border
     {"it", "co", "la"},
     {"da", "no", "nn", "sv"},                # scandinavian
@@ -146,17 +146,24 @@ def detect(
 
     # How sure the winning windows were, on their own terms. Agreement alone was
     # the whole confidence, and agreement is a share: when every window says the
-    # same thing the share is exactly 1.0 however weak those windows were, so a
-    # file nobody could identify came out as the most confident case there is,
-    # and the header of the document said so. Five windows at 0.30 are five
+    # same thing the share is exactly 1.0 no matter how weak those windows were,
+    # so a file nobody could identify came out as the most confident case there
+    # is, and the header of the document said so. Five windows at 0.30 are five
     # guesses that happen to agree.
     strength = mean([p for _, lang, p in samples if lang == winner] or [0.0])
     confidence = agreement * strength
 
     near = neighbours_of(winner)
     unsure_neighbour = bool(near) and strength < NEIGHBOUR_DOUBT
+    # A split between two languages that get confused with each other is the
+    # failure this rule is about, not a bilingual conversation. It used to come
+    # out with the mildest note in the module: three windows to two, each of them
+    # confident, passed the agreement floor by a hair and was called decided,
+    # while a file that agreed everywhere at 84% was held back.
+    split_between_neighbours = runner_up is not None and runner_up in near
 
-    reliable = agreement >= 0.6 and strength >= 0.5 and not unsure_neighbour
+    reliable = (agreement >= 0.6 and strength >= 0.5
+                and not unsure_neighbour and not split_between_neighbours)
     if agreement < 0.6:
         note = (f"language unclear between {winner} and {runner_up}: "
                 "this may be a bilingual conversation. Check it by hand.")
@@ -173,6 +180,11 @@ def detect(
         note = (f"{winner} {where}, but the model was unsure in each of them "
                 f"(average {strength:.0%}).{which} Say the language yourself if "
                 "you know it.")
+    elif split_between_neighbours:
+        note = (f"the windows split between {winner} and {runner_up}, which get "
+                f"confused with each other. That is more often one language the "
+                f"model cannot pin down than two languages in the room. Pass "
+                f"--lang if you know which it is.")
     elif unsure_neighbour:
         note = (f"{winner} at {strength:.0%} average, which is not high enough to "
                 f"separate it from {', '.join(near)}. These get confused with each "
