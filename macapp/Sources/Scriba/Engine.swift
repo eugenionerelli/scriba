@@ -10,7 +10,21 @@ import Foundation
 final class Engine: ObservableObject {
 
     @Published var phase: Phase = .idle
-    @Published var log: [String] = []
+
+    /// The newest line worth showing, and how far the current stage has got.
+    ///
+    /// The whole log used to be @Published and appended to per line. whisper
+    /// prints a progress percentage continuously, so every one of those lines
+    /// republished the entire array and SwiftUI rebuilt everything observing this
+    /// object, sidebar included. The window went sticky for the length of a
+    /// transcription, which is exactly as long as somebody most wants to use it.
+    @Published var lastLine = ""
+    @Published var progress: Double?
+
+    /// Kept for the failure message. Not published: nothing draws from it while
+    /// the job runs, and republishing it was the whole problem.
+    private(set) var log: [String] = []
+    private var lastPublish = Date.distantPast
     @Published var info: JobInfo?
     @Published var speakers: [Speaker] = []
     @Published var errorText: String?
@@ -116,6 +130,9 @@ final class Engine: ObservableObject {
         wasCancelled = false
         errorText = nil
         log.removeAll()
+        lastLine = ""
+        progress = nil
+        lastPublish = .distantPast
         phase = startingPhase
 
         let proc = Process()
@@ -219,6 +236,10 @@ final class Engine: ObservableObject {
     }
 
     private func ingest(_ text: String) {
+        var newestPhase: Phase?
+        var newestLine: String?
+        var newestProgress: Double?
+
         for line in text.split(separator: "\n").map(String.init) {
             let clean = line.trimmingCharacters(in: .whitespaces)
             guard !clean.isEmpty else { continue }
@@ -229,7 +250,12 @@ final class Engine: ObservableObject {
                 || clean.contains("UserWarning") || clean.hasPrefix("warn")
                 || clean.contains("Lightning automatically") { continue }
             log.append(clean)
-            if let p = Phase.from(logLine: clean) { phase = p }
+            if let p = Phase.from(logLine: clean) { newestPhase = p }
+            if let pct = Engine.percentage(in: clean) {
+                newestProgress = pct
+            } else {
+                newestLine = clean
+            }
             // Matched against a marker the engine emits, not against its wording.
             // The previous version looked for a phrase from the human message and
             // stopped working the day that sentence was rephrased. It broke silently,
@@ -240,6 +266,32 @@ final class Engine: ObservableObject {
             }
         }
         if log.count > 400 { log.removeFirst(log.count - 400) }
+
+        // A phase change is worth a redraw immediately. Everything else waits for
+        // the next tick, because the interface cannot show more than a few frames
+        // a second and the engine can produce hundreds of lines in one.
+        let now = Date()
+        let phaseChanged = newestPhase != nil && newestPhase != phase
+        guard phaseChanged || now.timeIntervalSince(lastPublish) > 0.25 else { return }
+        lastPublish = now
+        if let p = newestPhase, p != phase {
+            phase = p
+            progress = nil
+        }
+        if let pct = newestProgress { progress = pct }
+        if let line = newestLine { lastLine = line }
+    }
+
+    /// The percentage whisper prints while it decodes, if this line carries one.
+    ///
+    /// A bar that moves is the difference between "this is working" and "this has
+    /// hung", and the engine has been printing the number all along.
+    static func percentage(in line: String) -> Double? {
+        guard let range = line.range(of: #"(\d{1,3}(\.\d+)?)%"#, options: .regularExpression)
+        else { return nil }
+        let text = line[range].dropLast()
+        guard let value = Double(text) else { return nil }
+        return min(max(value / 100, 0), 1)
     }
 
     // MARK: - reading the state

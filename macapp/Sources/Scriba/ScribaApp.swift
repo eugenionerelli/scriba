@@ -17,6 +17,19 @@ struct ScribaApp: App {
                 }
                 .keyboardShortcut("r", modifiers: .command)
             }
+            // The two things this app does, on the keys a Mac application puts
+            // them on. Reaching for the mouse to start something that then runs
+            // for an hour is the wrong shape.
+            CommandMenu("Transcribe") {
+                Button("Start the queue") {
+                    NotificationCenter.default.post(name: .scribaStart, object: nil)
+                }
+                .keyboardShortcut("t", modifiers: .command)
+                Button("Stop") {
+                    NotificationCenter.default.post(name: .scribaStop, object: nil)
+                }
+                .keyboardShortcut(".", modifiers: .command)
+            }
             if WindowShot.isEnabled {
                 CommandGroup(after: .saveItem) {
                     Button("Save window as PNG") { WindowShot.save() }
@@ -32,9 +45,11 @@ struct ScribaApp: App {
 }
 
 extension Notification.Name {
-    /// Posted by the Refresh command. The window listens; the menu item does not
-    /// need to know anything about it.
+    /// Posted by the menu commands. The window listens; the menu items do not need
+    /// to know anything about the queue.
     static let scribaRefresh = Notification.Name("dev.nerelli.scriba.refresh")
+    static let scribaStart = Notification.Name("dev.nerelli.scriba.start")
+    static let scribaStop = Notification.Name("dev.nerelli.scriba.stop")
 }
 
 /// Exists for one line: quitting has to take the engine with it.

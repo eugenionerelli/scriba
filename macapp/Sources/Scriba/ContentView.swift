@@ -53,6 +53,12 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .scribaRefresh)) { _ in
             store.reload()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .scribaStart)) { _ in
+            if !engine.isRunning { startAll() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .scribaStop)) { _ in
+            if engine.isRunning { stopEverything() }
+        }
         .safeAreaInset(edge: .top) {
             // A wrong interpreter path used to look exactly like a clean install
             // with nothing in it: the state reader fails quietly and the sidebar
@@ -93,14 +99,11 @@ struct ContentView: View {
         } message: { Text($0) }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    let panel = NSOpenPanel()
-                    panel.allowedContentTypes = [.audio, .movie]
-                    panel.allowsMultipleSelection = true
-                    if panel.runModal() == .OK { add(panel.urls) }
-                } label: {
+                Button(action: openPanel) {
                     Label("Add recordings", systemImage: "plus")
                 }
+                .keyboardShortcut("o", modifiers: .command)
+                .help("Add recordings to the queue")
             }
         }
     }
@@ -135,7 +138,13 @@ struct ContentView: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if !queue.isEmpty {
+            if engine.isRunning {
+                RunningStrip(phase: engine.phase, progress: engine.progress,
+                             name: currentlyRunning,
+                             remaining: queue.filter { $0.state == .waiting }.count,
+                             onShow: { showRunning() },
+                             onStop: stopEverything)
+            } else if !queue.isEmpty {
                 VStack(spacing: 8) {
                     Divider()
                     Button {
@@ -185,9 +194,17 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if engine.isRunning {
-            ProgressPanel(phase: engine.phase, log: engine.log,
-                          current: currentlyRunning,
+        // The running job no longer takes the pane over. It used to, which meant
+        // that for the length of a transcription, which is the length of the
+        // recording, there was nothing else you could look at: not the transcript
+        // you made this morning, not the one before it. The strip below the
+        // sidebar says what is happening from wherever you are, and selecting the
+        // running recording still gives you the full panel.
+        if let running = queue.first(where: { $0.state == .running }),
+           case .pending(let id) = selection, id == running.id {
+            ProgressPanel(phase: engine.phase, line: engine.lastLine,
+                          progress: engine.progress,
+                          current: running.url.lastPathComponent,
                           remaining: queue.filter { $0.state == .waiting }.count,
                           onStop: stopEverything)
         } else if case .pending(let id) = selection,
@@ -214,6 +231,21 @@ struct ContentView: View {
 
     private var currentlyRunning: String {
         queue.first(where: { $0.state == .running })?.url.lastPathComponent ?? ""
+    }
+
+    /// Command O, because that is what it is on every other Mac application.
+    private func openPanel() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio, .movie]
+        panel.allowsMultipleSelection = true
+        panel.message = "Recordings to add to the queue. Nothing starts until you press Transcribe."
+        if panel.runModal() == .OK { add(panel.urls) }
+    }
+
+    private func showRunning() {
+        if let running = queue.first(where: { $0.state == .running }) {
+            selection = .pending(running.id)
+        }
     }
 
     // MARK: - actions
@@ -479,9 +511,54 @@ struct JobPanel: View {
     }
 }
 
+/// What is happening, from wherever you are in the app.
+///
+/// Sits under the sidebar for the whole run, so the rest of the window is free
+/// to be used. It says the stage in words, because a bar on its own tells you
+/// something is moving and not what it is doing.
+struct RunningStrip: View {
+    let phase: Phase
+    let progress: Double?
+    let name: String
+    let remaining: Int
+    let onShow: () -> Void
+    let onStop: () -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Divider()
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(.callout).lineLimit(1)
+                    Text(remaining > 0
+                         ? "\(phase.rawValue.lowercased()), \(remaining) waiting"
+                         : phase.rawValue)
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                Button(role: .destructive, action: onStop) {
+                    Image(systemName: "stop.fill")
+                }
+                .help("Stop, and put the queue back to waiting")
+            }
+            if let progress {
+                ProgressView(value: progress)
+            } else {
+                ProgressView().progressViewStyle(.linear)
+            }
+        }
+        .padding(12)
+        .background(.bar)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onShow)
+        .help("Show the details of this run")
+    }
+}
+
 struct ProgressPanel: View {
     let phase: Phase
-    let log: [String]
+    let line: String
+    let progress: Double?
     let current: String
     let remaining: Int
     let onStop: () -> Void
@@ -502,7 +579,15 @@ struct ProgressPanel: View {
                 }
             }
             HStack(spacing: 14) {
-                ProgressView().progressViewStyle(.linear)
+                if let progress {
+                    ProgressView(value: progress).progressViewStyle(.linear)
+                    Text("\(Int(progress * 100))%")
+                        .font(.system(.callout, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                } else {
+                    ProgressView().progressViewStyle(.linear)
+                }
                 // The whole point of this app is that nothing starts without being
                 // asked. Something that runs for an hour and cannot be called off
                 // is the same problem wearing the opposite hat.
@@ -529,8 +614,8 @@ struct ProgressPanel: View {
             // The last engine line, so a long stage still looks alive. Whisper prints a
             // percentage as it goes, and that is the only proof on screen that the
             // machine is busy rather than stuck.
-            if let last = log.last {
-                Text(last).font(.system(size: 11, design: .monospaced))
+            if !line.isEmpty {
+                Text(line).font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(2).textSelection(.enabled)
             }
