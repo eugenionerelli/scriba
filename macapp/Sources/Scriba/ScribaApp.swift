@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct ScribaApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+
     var body: some Scene {
         WindowGroup("Scriba") {
             ContentView()
@@ -23,9 +25,29 @@ struct ScribaApp: App {
     }
 }
 
+/// Exists for one line: quitting has to take the engine with it.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    static var onQuit: (() -> Void)?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        AppDelegate.onQuit?()
+    }
+}
+
 struct SettingsView: View {
     @State private var python = Engine.pythonPath
     @State private var engine = Engine.enginePath
+
+    private var engineFolderState: String {
+        var isDir: ObjCBool = false
+        let there = FileManager.default.fileExists(atPath: engine, isDirectory: &isDir)
+        if !there || !isDir.boolValue {
+            return "No folder there. Leave it as it is if you installed scriba with "
+                 + "pip: this only matters when you are running it from a clone."
+        }
+        return FileManager.default.fileExists(atPath: engine + "/scriba/cli.py")
+            ? "Found." : "Folder found, but no scriba package inside it."
+    }
 
     var body: some View {
         Form {
@@ -41,6 +63,13 @@ struct SettingsView: View {
 
                 TextField("scriba package folder", text: $engine)
                     .onChange(of: engine) { _, v in Engine.enginePath = v }
+                // This one is the process working directory, so a wrong value
+                // fails before Python is reached and the error blames the
+                // interpreter. It used to be the field without validation, which
+                // is the wrong way round.
+                Text(engineFolderState)
+                    .font(.caption)
+                    .foregroundStyle(Engine.isEngineFolderUsable ? Color.secondary : Color.red)
             }
             Section("pyannote token") {
                 Text("The Hugging Face token is set once from the terminal:")

@@ -111,6 +111,10 @@ enum Phase: String {
         // precisely when alignment did not happen.
         if l.contains("alignment:") { return .aligning }
         if l.contains("diarization:") { return .diarizing }
+        // "registry:" is printed on every run, matched or not. The arrow lines
+        // are printed only when somebody was recognised, so on a first run with
+        // an empty registry this stage used to be skipped over on screen.
+        if l.contains("registry:") { return .identifying }
         if l.contains("voice ") && l.contains("→") { return .identifying }
         if l.contains("wrote") { return .exporting }
         return nil

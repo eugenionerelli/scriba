@@ -39,7 +39,32 @@ struct ContentView: View {
             detail
         }
         .frame(minWidth: 900, minHeight: 560)
-        .onAppear { store.reload() }
+        .onAppear {
+            store.reload()
+            AppDelegate.onQuit = { [weak engine] in engine?.terminateChild() }
+        }
+        .safeAreaInset(edge: .top) {
+            // A wrong interpreter path used to look exactly like a clean install
+            // with nothing in it: the state reader fails quietly and the sidebar
+            // reads "Nothing yet". Say it once, at the top, before anyone presses
+            // a button and waits for the failure.
+            if !Engine.isConfigured {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("No Python interpreter at \(Engine.pythonPath)").bold()
+                        Text("Open Settings and point it at the environment where "
+                             + "scriba is installed. Nothing will run until then.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    SettingsLink { Text("Open Settings") }
+                }
+                .padding(12)
+                .background(.regularMaterial)
+            }
+        }
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             accept(providers)
         }
@@ -91,7 +116,10 @@ struct ContentView: View {
                 if store.jobs.isEmpty && !store.isLoading {
                     Text("Nothing yet").font(.callout).foregroundStyle(.secondary)
                 }
-                ForEach(store.jobs.filter { $0.duration > 0 }) { job in
+                // Everything, including the jobs that produced nothing. Hiding
+                // those meant the app could neither show the residue of a failed
+                // run nor offer to clear it, while the terminal listed it plainly.
+                ForEach(store.jobs) { job in
                     JobRowView(job: job).tag(Selection.job(job.jobDir))
                 }
             }
@@ -150,7 +178,8 @@ struct ContentView: View {
         if engine.isRunning {
             ProgressPanel(phase: engine.phase, log: engine.log,
                           current: currentlyRunning,
-                          remaining: queue.filter { $0.state == .waiting }.count)
+                          remaining: queue.filter { $0.state == .waiting }.count,
+                          onStop: stopEverything)
         } else if case .pending(let id) = selection,
                   let item = queue.first(where: { $0.id == id }) {
             PendingPanel(item: item, language: $language,
@@ -206,10 +235,20 @@ struct ContentView: View {
         mark(item.id, .running)
         engine.run(file: item.url, language: language,
                    minSpeakers: expectedSpeakers > 0 ? expectedSpeakers : nil,
-                   maxSpeakers: expectedSpeakers > 0 ? expectedSpeakers : nil) { ok in
-            mark(item.id, ok ? .finished : .failed("did not finish"))
+                   maxSpeakers: expectedSpeakers > 0 ? expectedSpeakers : nil) { outcome in
+            switch outcome {
+            case .finished:
+                mark(item.id, .finished)
+            case .failed:
+                // The reason, not the fact. "Did not finish" was true and useless,
+                // and the alert carrying the real message is dismissed once.
+                mark(item.id, .failed(engine.failureSummary))
+            case .cancelled:
+                // Asked for. Back in the queue rather than marked as broken.
+                mark(item.id, .waiting)
+            }
             store.reload()
-            if runningAll { next() }
+            if runningAll, outcome != .cancelled { next() }
         }
     }
 
@@ -227,6 +266,20 @@ struct ContentView: View {
             return
         }
         start(item)
+    }
+
+    /// Stop the running job and empty the rest of the queue.
+    ///
+    /// Stopping one and starting the next is not what anybody means by Stop, and
+    /// the queue was started by one press of one button, so it ends the same way.
+    /// Everything still waiting goes back to waiting rather than being thrown
+    /// away: the files are still listed and one more press starts them again.
+    private func stopEverything() {
+        runningAll = false
+        engine.cancel()
+        for i in queue.indices where queue[i].state == .running {
+            queue[i].state = .waiting
+        }
     }
 
     private func mark(_ id: UUID, _ state: QueueItem.State) {
@@ -421,6 +474,7 @@ struct ProgressPanel: View {
     let log: [String]
     let current: String
     let remaining: Int
+    let onStop: () -> Void
 
     private let order: [Phase] = [.preparing, .detecting, .transcribing,
                                   .aligning, .diarizing, .identifying, .exporting]
@@ -437,7 +491,16 @@ struct ProgressPanel: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            ProgressView().progressViewStyle(.linear)
+            HStack(spacing: 14) {
+                ProgressView().progressViewStyle(.linear)
+                // The whole point of this app is that nothing starts without being
+                // asked. Something that runs for an hour and cannot be called off
+                // is the same problem wearing the opposite hat.
+                Button(role: .destructive) { onStop() } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                }
+                .controlSize(.regular)
+            }
 
             VStack(alignment: .leading, spacing: 9) {
                 ForEach(order, id: \.self) { p in

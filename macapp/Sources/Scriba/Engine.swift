@@ -21,6 +21,23 @@ final class Engine: ObservableObject {
 
     private var process: Process?
 
+    /// Set while a stop the user asked for is in flight.
+    ///
+    /// Terminating the child makes it exit non-zero, which is indistinguishable
+    /// from a crash unless somebody writes it down. Without this the Stop button
+    /// worked and then apologised for working, with an alert quoting the last six
+    /// lines of a log nobody needed.
+    private(set) var wasCancelled = false
+
+    /// One line saying why the last run stopped, for a list that has room for one
+    /// line. The alert carries the full text and is dismissed once; this stays.
+    var failureSummary: String {
+        guard let text = errorText, !text.isEmpty else { return "did not finish" }
+        let firstLine = text.split(separator: "\n").first.map(String.init) ?? text
+        let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
+        return trimmed.count > 90 ? String(trimmed.prefix(88)) + "…" : trimmed
+    }
+
     // MARK: - configuration
 
     /// Where the Python interpreter with scriba installed lives.
@@ -50,6 +67,18 @@ final class Engine: ObservableObject {
         FileManager.default.isExecutableFile(atPath: pythonPath)
     }
 
+    /// Whether the working directory we are about to hand the process exists.
+    ///
+    /// It does not have to hold the package: a pip install puts scriba on the
+    /// path and the folder is then only a place to start from. It does have to
+    /// exist, because Process throws before running anything if it does not, and
+    /// the error that surfaces then names the interpreter and not the folder.
+    static var isEngineFolderUsable: Bool {
+        var isDir: ObjCBool = false
+        let there = FileManager.default.fileExists(atPath: enginePath, isDirectory: &isDir)
+        return there && isDir.boolValue
+    }
+
     /// Mirrors ERR_NO_TOKEN in scriba/pipeline.py. The one string that genuinely
     /// crosses the Python/Swift boundary, so it is spelled out in one place on
     /// each side rather than buried inside a condition.
@@ -57,11 +86,15 @@ final class Engine: ObservableObject {
 
     // MARK: - execution
 
-    /// `onFinish` receives whether the engine exited cleanly, so a queue can move on
-    /// to the next recording. Without it the caller has to poll `isRunning`, and a
-    /// failure looks exactly like a success that ran quickly.
+    /// How a run ended. A queue needs all three: it moves on after the first two
+    /// and stops after the third, and a stop the user asked for is not a failure.
+    enum Outcome { case finished, failed, cancelled }
+
+    /// `onFinish` receives the outcome, so a queue can move on to the next
+    /// recording. Without it the caller has to poll `isRunning`, and a failure
+    /// looks exactly like a success that ran quickly.
     func run(file: URL, language: String, minSpeakers: Int?, maxSpeakers: Int?,
-             onFinish: ((Bool) -> Void)? = nil) {
+             onFinish: ((Outcome) -> Void)? = nil) {
         guard !isRunning else { return }
         var args = ["-m", "scriba.cli", "run", file.path, "--lang", language]
         if let m = minSpeakers { args += ["--min-speakers", String(m)] }
@@ -78,8 +111,9 @@ final class Engine: ObservableObject {
     }
 
     private func launch(_ args: [String], on file: URL, startingPhase: Phase,
-                        onFinish: ((Bool) -> Void)? = nil) {
+                        onFinish: ((Outcome) -> Void)? = nil) {
         isRunning = true
+        wasCancelled = false
         errorText = nil
         log.removeAll()
         phase = startingPhase
@@ -87,7 +121,11 @@ final class Engine: ObservableObject {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: Self.pythonPath)
         proc.arguments = args
-        proc.currentDirectoryURL = URL(fileURLWithPath: Self.enginePath)
+        // Fall back to the home directory rather than a folder that is not there.
+        // The default points at a clone, and somebody who installed with pip has
+        // no clone, so the run failed with a message about the interpreter.
+        proc.currentDirectoryURL = URL(fileURLWithPath:
+            Self.isEngineFolderUsable ? Self.enginePath : NSHomeDirectory())
 
         var env = ProcessInfo.processInfo.environment
         env["PYTHONPATH"] = Self.enginePath
@@ -127,6 +165,13 @@ final class Engine: ObservableObject {
                 errPipe.fileHandleForReading.readabilityHandler = nil
                 self?.isRunning = false
                 self?.process = nil
+                if self?.wasCancelled == true {
+                    self?.wasCancelled = false
+                    self?.phase = .idle
+                    self?.errorText = nil
+                    onFinish?(.cancelled)
+                    return
+                }
                 let ok = p.terminationStatus == 0
                 if ok {
                     self?.phase = .done
@@ -138,7 +183,7 @@ final class Engine: ObservableObject {
                             ?? "The engine exited with code \(p.terminationStatus)."
                     }
                 }
-                onFinish?(ok)
+                onFinish?(ok ? .finished : .failed)
             }
         }
 
@@ -149,15 +194,28 @@ final class Engine: ObservableObject {
             isRunning = false
             phase = .failed
             errorText = "Cannot launch Python at \(Self.pythonPath): \(error.localizedDescription)"
-            onFinish?(false)
+            onFinish?(.failed)
         }
     }
 
     func cancel() {
+        guard isRunning else { return }
+        wasCancelled = true
         process?.terminate()
         process = nil
         isRunning = false
         phase = .idle
+        errorText = nil
+    }
+
+    /// Kill the child before the app goes away.
+    ///
+    /// A terminated app leaves its subprocess running: whisper carries on with
+    /// every fast core busy and no window left to explain what is using them.
+    /// Somebody who quits an app has already said what they want.
+    func terminateChild() {
+        process?.terminate()
+        process = nil
     }
 
     private func ingest(_ text: String) {
