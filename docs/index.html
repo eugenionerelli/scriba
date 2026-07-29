@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>scriba — transcripts that know who is talking</title>
+<meta name="description" content="Turns a recorded conversation into a document that says who said what. Learns a voice the first time you name it. Runs on your own machine.">
+<meta property="og:title" content="scriba">
+<meta property="og:description" content="Transcripts that know who is talking. Learns a voice the first time you name it, and runs entirely on your own machine.">
+<meta property="og:image" content="https://eugenionerelli.github.io/scriba/img/04-who-is-speaking.png">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230E0D0C'/><g fill='%23E0A458'><rect x='7' y='13' width='2' height='6'/><rect x='12' y='8' width='2' height='16'/><rect x='17' y='11' width='2' height='10'/><rect x='22' y='14' width='2' height='4'/></g></svg>">
+
+<style>
+/* ---------------------------------------------------------------------------
+   scriba.
+   No webfonts and no third-party anything: a page about audio that never
+   leaves your machine has no business phoning a font CDN on every visit.
+   The type is the system stack, worked instead of downloaded.
+--------------------------------------------------------------------------- */
+
+:root {
+  /* Warm off-black. Neutral greys with no chroma read as dead, so every
+     surface here carries a little red and yellow in it. */
+  --ink:        #0E0D0C;
+  --ink-raised: #161413;
+  --ink-line:   #2A2624;
+  --paper:      #F4F0E8;
+  --paper-ink:  #17150F;
+
+  --text:       #EDE8DE;
+  --text-dim:   #A39B8F;
+  --text-faint: #6E665C;
+
+  --amber:      #E0A458;   /* the needle on a meter, not a brand colour */
+  --amber-deep: #B87A2E;
+  --green:      #7FA37A;
+
+  --measure: 62ch;
+  --gutter: clamp(1.25rem, 5vw, 6rem);
+
+  --sans: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, ui-serif, serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: clamp(1rem, 0.96rem + 0.2vw, 1.0625rem);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+img { max-width: 100%; height: auto; display: block; }
+a { color: inherit; }
+
+::selection { background: var(--amber); color: #17150F; }
+
+/* --- rhythm ------------------------------------------------------------- */
+
+.wrap { max-width: 1180px; margin-inline: auto; padding-inline: var(--gutter); }
+.narrow { max-width: 68ch; }
+
+section { padding-block: clamp(4rem, 9vw, 8.5rem); }
+section.tight { padding-block: clamp(3rem, 6vw, 5.5rem); }
+
+.eyebrow {
+  font: 600 0.75rem/1 var(--mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--amber);
+  margin: 0 0 1.25rem;
+}
+.eyebrow::before {
+  content: "";
+  display: inline-block;
+  width: 1.75rem; height: 1px;
+  background: var(--amber-deep);
+  vertical-align: 0.3em;
+  margin-right: 0.75rem;
+}
+
+h1, h2, h3 { font-weight: 800; letter-spacing: -0.022em; line-height: 1.05; margin: 0; }
+h2 { font-size: clamp(1.9rem, 1.2rem + 2.6vw, 3.1rem); }
+h3 { font-size: clamp(1.15rem, 1rem + 0.6vw, 1.4rem); letter-spacing: -0.012em; line-height: 1.25; }
+
+p { max-width: var(--measure); }
+.lede { font-size: clamp(1.12rem, 1.02rem + 0.5vw, 1.35rem); color: var(--text-dim); line-height: 1.55; }
+
+/* --- hero: asymmetric, weight to the left ------------------------------- */
+
+header.hero {
+  padding-block: clamp(3.5rem, 8vw, 7rem) clamp(3rem, 7vw, 6rem);
+  border-bottom: 1px solid var(--ink-line);
+  overflow: hidden;
+}
+.hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr);
+  gap: clamp(2rem, 5vw, 4rem);
+  align-items: center;
+}
+@media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } }
+
+.wordmark {
+  font: 800 1.05rem/1 var(--sans);
+  letter-spacing: 0.02em;
+  display: flex; align-items: center; gap: 0.6rem;
+  margin-bottom: clamp(2.5rem, 6vw, 4.5rem);
+}
+.wordmark svg { display: block; }
+
+h1 {
+  font-size: clamp(2.5rem, 1.5rem + 4.4vw, 4.6rem);
+  max-width: 15ch;
+  font-weight: 800;
+}
+h1 em {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--amber);
+}
+.hero p.lede { margin: 1.5rem 0 0; max-width: 44ch; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2.25rem; }
+.btn {
+  display: inline-flex; align-items: center; gap: 0.55rem;
+  padding: 0.8rem 1.4rem;
+  font: 600 0.94rem/1 var(--sans);
+  text-decoration: none;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  transition: transform 180ms cubic-bezier(.2,.7,.3,1), background-color 180ms ease, border-color 180ms ease;
+}
+.btn-primary { background: var(--amber); color: #17150F; }
+.btn-primary:hover { background: #EEB569; transform: translateY(-1px); }
+.btn-ghost { border-color: var(--ink-line); color: var(--text-dim); }
+.btn-ghost:hover { border-color: var(--text-faint); color: var(--text); }
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  margin-top: clamp(3rem, 6vw, 4.5rem);
+  border-top: 1px solid var(--ink-line);
+}
+@media (max-width: 760px) { .stat-row { grid-template-columns: repeat(2, 1fr); } }
+.stat { padding: 1.6rem 1.75rem 0 0; }
+.stat + .stat { border-left: 1px solid var(--ink-line); padding-left: 1.75rem; }
+@media (max-width: 760px) {
+  .stat:nth-child(3) { border-top: 1px solid var(--ink-line); }
+  .stat:nth-child(4) { border-top: 1px solid var(--ink-line); }
+  .stat:nth-child(3) { border-left: 0; padding-left: 0; }
+}
+.stat b { display: block; font: 800 1.7rem/1 var(--sans); letter-spacing: -0.025em; }
+.stat span { font: 400 0.78rem/1.5 var(--mono); color: var(--text-faint); display: block; margin-top: 0.5rem; max-width: 22ch; }
+
+/* the screenshot runs past the right edge of the page */
+.hero-shot {
+  margin-right: calc(var(--gutter) * -1.6);
+  border: 1px solid var(--ink-line);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 40px 80px -30px rgba(0,0,0,.85), 0 2px 8px rgba(0,0,0,.4);
+}
+@media (max-width: 900px) { .hero-shot { margin-right: 0; } }
+
+/* --- figures ------------------------------------------------------------ */
+
+figure { margin: 0; }
+figure img {
+  border: 1px solid var(--ink-line);
+  border-radius: 10px;
+  box-shadow: 0 30px 60px -28px rgba(0,0,0,.8);
+}
+figcaption {
+  font: 400 0.85rem/1.5 var(--mono);
+  color: var(--text-faint);
+  margin-top: 0.9rem;
+  max-width: 54ch;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: clamp(2rem, 5vw, 4rem);
+  align-items: center;
+}
+.split.top { align-items: start; }
+.split.flip { grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr); }
+@media (max-width: 860px) {
+  .split, .split.flip { grid-template-columns: 1fr; }
+  .split.flip figure { order: -1; }
+}
+
+/* --- the inverted section, for contrast --------------------------------- */
+
+.paper {
+  background: var(--paper);
+  color: var(--paper-ink);
+}
+.paper .eyebrow { color: var(--amber-deep); }
+.paper .eyebrow::before { background: var(--amber-deep); }
+.paper .lede { color: #5A5347; }
+.paper a { color: var(--amber-deep); }
+
+.false-friends {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1px;
+  background: rgba(23,21,15,.14);
+  border: 1px solid rgba(23,21,15,.14);
+  margin-top: clamp(2rem, 4vw, 3rem);
+}
+.ff {
+  background: var(--paper);
+  padding: 1.4rem 1.5rem 1.6rem;
+}
+.ff b { display: block; font: 400 1.5rem/1.2 var(--serif); font-style: italic; }
+.ff .arrow { color: var(--amber-deep); font-family: var(--mono); font-size: 0.8rem; display: block; margin: 0.5rem 0; }
+.ff span { font-size: 0.85rem; color: #6B6355; display: block; }
+
+blockquote.pull {
+  margin: clamp(2.5rem, 5vw, 3.5rem) 0 0;
+  font: 400 clamp(1.35rem, 1rem + 1.5vw, 2rem)/1.35 var(--serif);
+  font-style: italic;
+  max-width: 26ch;
+  border-left: 2px solid var(--amber-deep);
+  padding-left: clamp(1.25rem, 3vw, 2rem);
+}
+blockquote.pull cite {
+  display: block;
+  font: 400 0.8rem/1.5 var(--mono);
+  font-style: normal;
+  color: #6B6355;
+  margin-top: 1rem;
+}
+
+/* --- tables ------------------------------------------------------------- */
+
+table { border-collapse: collapse; width: 100%; margin-top: 2rem; font-size: 0.95rem; }
+th, td { text-align: left; padding: 0.85rem 1rem 0.85rem 0; border-bottom: 1px solid var(--ink-line); vertical-align: top; }
+th { font: 600 0.72rem/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-faint); padding-bottom: 0.6rem; }
+td:first-child { font-family: var(--mono); font-size: 0.88rem; white-space: nowrap; padding-right: 2rem; }
+tr:last-child td { border-bottom: 0; }
+.zone-apply td:first-child { color: var(--green); }
+.zone-ask td:first-child { color: var(--amber); }
+.zone-new td:first-child { color: var(--text-faint); }
+
+/* --- speed bars --------------------------------------------------------- */
+
+.bars { margin-top: clamp(2rem, 4vw, 3rem); display: grid; gap: 1.4rem; max-width: 760px; }
+.bar-row { display: grid; grid-template-columns: 13rem 1fr 5rem; gap: 1.25rem; align-items: center; }
+@media (max-width: 640px) { .bar-row { grid-template-columns: 1fr 5rem; gap: 0.4rem 1rem; } .bar-label { grid-column: 1 / -1; } }
+.bar-label { font: 400 0.85rem/1.4 var(--mono); color: var(--text-dim); }
+.bar-track { position: relative; height: 34px; background: var(--ink-raised); }
+.bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--ink-line);
+  transition: width 900ms cubic-bezier(.16,.84,.44,1);
+}
+.bar-fill.hot { background: linear-gradient(90deg, var(--amber-deep), var(--amber)); }
+.bar-time { font: 600 0.85rem/1 var(--mono); color: var(--text-dim); }
+.bar-row .hot ~ .bar-time, .bar-time.hot { color: var(--amber); }
+@media (prefers-reduced-motion: reduce) { .bar-fill { transition: none; } }
+
+/* --- code --------------------------------------------------------------- */
+
+pre {
+  background: var(--ink-raised);
+  border: 1px solid var(--ink-line);
+  border-radius: 8px;
+  padding: 1.4rem 1.5rem;
+  overflow-x: auto;
+  font: 400 0.875rem/1.75 var(--mono);
+  margin: 2rem 0 0;
+  max-width: 760px;
+}
+pre .c { color: var(--text-faint); }
+pre .p { color: var(--amber); }
+code { font-family: var(--mono); font-size: 0.9em; }
+p code, li code { background: var(--ink-raised); padding: 0.1em 0.4em; border-radius: 4px; }
+.paper p code { background: rgba(23,21,15,.07); }
+
+/* --- steps -------------------------------------------------------------- */
+
+.steps { list-style: none; padding: 0; margin: clamp(2rem, 4vw, 3rem) 0 0; display: grid; gap: 2.25rem; max-width: 780px; }
+.steps li { display: grid; grid-template-columns: 3.5rem 1fr; gap: 1.25rem; align-items: start; }
+.steps .n { font: 800 2.2rem/0.9 var(--sans); color: #3B3532; letter-spacing: -0.04em; }
+.steps h3 { margin-bottom: 0.35rem; }
+.steps p { color: var(--text-dim); margin: 0; }
+
+/* --- footer ------------------------------------------------------------- */
+
+footer {
+  border-top: 1px solid var(--ink-line);
+  padding-block: 3.5rem 4.5rem;
+  color: var(--text-faint);
+  font-size: 0.9rem;
+}
+footer a { color: var(--text-dim); text-decoration-color: var(--ink-line); text-underline-offset: 3px; }
+footer a:hover { color: var(--amber); }
+.footer-grid { display: flex; flex-wrap: wrap; gap: 2rem 3.5rem; justify-content: space-between; align-items: baseline; }
+
+/* --- entrance ----------------------------------------------------------- */
+
+.rise { opacity: 0; transform: translateY(14px); }
+.rise.in { opacity: 1; transform: none; transition: opacity 520ms ease, transform 520ms cubic-bezier(.16,.84,.44,1); }
+@media (prefers-reduced-motion: reduce) {
+  .rise { opacity: 1; transform: none; }
+  .rise.in { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="wordmark">
+      <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+        <g fill="#E0A458">
+          <rect x="5" y="13" width="2" height="6"/><rect x="11" y="7" width="2" height="18"/>
+          <rect x="17" y="10" width="2" height="12"/><rect x="23" y="14" width="2" height="4"/>
+        </g>
+      </svg>
+      scriba
+    </div>
+
+    <div class="hero-grid">
+      <div>
+        <h1>Transcripts that know <em>who</em> is talking.</h1>
+        <p class="lede">
+          scriba turns a recording into a document with names in it. Name a voice once
+          and it is recognised in every recording after that. The audio never leaves
+          your machine.
+        </p>
+        <div class="actions">
+          <a class="btn btn-primary" href="https://github.com/eugenionerelli/scriba">
+            <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+            View on GitHub
+          </a>
+          <a class="btn btn-ghost" href="#install">Install it</a>
+        </div>
+
+      </div>
+
+      <figure class="hero-shot">
+        <img src="img/04-who-is-speaking.png" width="2522" height="1738" fetchpriority="high"
+             alt="The Scriba window showing two speakers, each already named from the voice registry with a confidence score, alongside a quote from each and a preview of the transcript">
+      </figure>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat"><b>35.7s</b><span>diarization on Metal, down from 226s on CPU</span></div>
+      <div class="stat"><b>8m 13s</b><span>end to end for 6:45 of audio on an M4</span></div>
+      <div class="stat"><b>41</b><span>real turns where whisper alone gave 16 blocks</span></div>
+      <div class="stat"><b>0</b><span>bytes of audio sent anywhere</span></div>
+    </div>
+  </div>
+</header>
+
+<!-- ---------------------------------------------------------------- 1 --- -->
+<section class="tight">
+  <div class="wrap">
+    <p class="eyebrow rise">The part everything else gets wrong</p>
+    <div class="split top">
+      <div>
+        <h2 class="rise">A voice you<br>have named<br>stays named.</h2>
+      </div>
+      <div class="rise">
+        <p class="lede">
+          Diarization tells you there were two people in the room. It labels them
+          <code>SPEAKER_00</code> and <code>SPEAKER_01</code>, and it renumbers them on
+          the next file, so the same person is 00 on Monday and 02 on Tuesday.
+        </p>
+        <p>
+          pyannote computes a 256-dimensional voice print for each speaker along the
+          way, because that is how it separates them at all. whisperX discards it.
+          scriba keeps it, files it under the name you type, and compares against the
+          registry on every later recording.
+        </p>
+        <table>
+          <thead><tr><th>Similarity</th><th>What happens</th></tr></thead>
+          <tbody>
+            <tr class="zone-apply"><td>0.75 and up</td><td>The name is applied.</td></tr>
+            <tr class="zone-ask"><td>0.55 to 0.75</td><td>It suggests a name and waits. Confirming stays your job.</td></tr>
+            <tr class="zone-new"><td>below 0.55</td><td>Treated as a voice it has not heard.</td></tr>
+          </tbody>
+        </table>
+        <p style="margin-top:1.5rem;color:var(--text-dim)">
+          There is also a margin of 0.05 over the runner-up. When two people on file
+          come out almost equally close, nothing is chosen: a wrong name raises no
+          error and quietly poisons every transcript downstream, so the unanswered
+          question is the better failure.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- 2 --- -->
+<section class="paper">
+  <div class="wrap">
+    <p class="eyebrow rise">Why it exists</p>
+    <h2 class="rise" style="max-width:18ch">The wrong language raises no error. It invents a text.</h2>
+    <p class="lede rise" style="margin-top:1.5rem">
+      A script with a hardcoded <code>--language it</code>, handed a recording that was
+      actually in Spanish. Whisper did not fail. It produced fluent, punctuated,
+      entirely made-up Italian.
+    </p>
+
+    <div class="false-friends rise">
+      <div class="ff"><b>salir</b><span class="arrow">heard as</span><b>salire</b><span>to leave becomes to go up</span></div>
+      <div class="ff"><b>carta</b><span class="arrow">heard as</span><b>carta</b><span>letter becomes paper</span></div>
+      <div class="ff"><b>burro</b><span class="arrow">heard as</span><b>burro</b><span>donkey becomes butter</span></div>
+      <div class="ff"><b>éxito</b><span class="arrow">heard as</span><b>esito</b><span>success becomes outcome</span></div>
+    </div>
+
+    <blockquote class="pull rise">
+      It does this to every sentence at once, and each one comes out plausible.
+      <cite>Left alone, Whisper decides the language from the first 30 seconds, which in a real conversation is small talk.</cite>
+    </blockquote>
+
+    <p class="rise" style="margin-top:clamp(2rem,4vw,3rem)">
+      scriba samples five windows across the whole file and votes, weighting each
+      window by confidence. When the vote is close it says so on screen instead of
+      choosing in silence.
+    </p>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- 3 --- -->
+<section>
+  <div class="wrap">
+    <p class="eyebrow rise">How it goes</p>
+    <div class="split flip">
+      <div class="rise">
+        <h2>Nothing starts<br>on its own.</h2>
+        <p class="lede" style="margin-top:1.5rem">
+          Transcription runs for roughly as long as the recording lasts. An app that
+          begins that the moment you drop a file in is an app that decides to occupy
+          your machine for an hour without asking.
+        </p>
+        <p>
+          Drop files in, set the language and the number of people if you know it, and
+          press the button. The estimate is shown before the run rather than after,
+          because a progress bar that has not moved in four minutes reads as a hang.
+        </p>
+      </div>
+      <figure class="rise">
+        <img src="img/02-before-you-start.png" width="2522" height="1738" loading="lazy"
+             alt="A queued recording with two settings, language and number of people in the room, above a Transcribe button">
+        <figcaption>Two settings, one button. The note underneath says where the time goes and why.</figcaption>
+      </figure>
+    </div>
+
+    <div class="split" style="margin-top:clamp(3rem,7vw,6rem)">
+      <div class="rise">
+        <h2>Seven stages,<br>and the log<br>underneath.</h2>
+        <p class="lede" style="margin-top:1.5rem">
+          The window can be closed while it works. What the engine prints is shown as
+          it prints it, because a machine that has gone quiet for ten minutes should be
+          able to prove it is still busy.
+        </p>
+      </div>
+      <figure class="rise">
+        <img src="img/03-running.png" width="2522" height="1738" loading="lazy"
+             alt="The run in progress: preparing the audio and detecting the language are ticked, transcribing is next, and the engine's own log line is shown below">
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- 4 --- -->
+<section class="tight" style="background:var(--ink-raised);border-block:1px solid var(--ink-line)">
+  <div class="wrap">
+    <p class="eyebrow rise">Where the time goes</p>
+    <h2 class="rise" style="max-width:21ch">The same recording, measured rather than estimated.</h2>
+    <p class="lede rise" style="margin-top:1.25rem">
+      6 minutes 45 of Spanish conversation on an M4 with 16 GB, warm model cache,
+      identical settings on both sides.
+    </p>
+
+    <div class="bars" id="bars">
+      <div class="bar-row rise">
+        <div class="bar-label">Transcription, 8 threads</div>
+        <div class="bar-track"><div class="bar-fill" data-w="74"></div></div><div class="bar-time">443.1s</div>
+      </div>
+      <div class="bar-row rise">
+        <div class="bar-label">Diarization, CPU</div>
+        <div class="bar-track"><div class="bar-fill" data-w="38"></div></div><div class="bar-time">225.9s</div>
+      </div>
+      <div class="bar-row rise">
+        <div class="bar-label">Diarization, Metal</div>
+        <div class="bar-track"><div class="bar-fill hot" data-w="6"></div></div><div class="bar-time hot">35.7s</div>
+      </div>
+      <div class="bar-row rise">
+        <div class="bar-label">Word-level alignment</div>
+        <div class="bar-track"><div class="bar-fill" data-w="2.4"></div></div><div class="bar-time">14.1s</div>
+      </div>
+    </div>
+
+    <p class="rise" style="margin-top:2.5rem;color:var(--text-dim);max-width:64ch">
+      <code>ctranslate2</code>, the engine under faster-whisper, has no Metal backend,
+      so transcription runs on the CPU whatever you do. Diarization does run on Metal,
+      and the output was verified identical to the CPU run before that became the
+      default: same 165 turns, same labels, every boundary matching to the millisecond.
+      Alignment, the stage that sounds expensive, costs 14 seconds.
+    </p>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- 5 --- -->
+<section id="install">
+  <div class="wrap">
+    <p class="eyebrow rise">Getting it running</p>
+    <div class="split flip">
+      <div>
+        <h2 class="rise">Four steps,<br>one of them<br>a licence page.</h2>
+        <ol class="steps">
+          <li class="rise"><span class="n">01</span>
+            <div><h3>Install into an environment</h3>
+            <p>Python 3.10 or newer and <code>ffmpeg</code>. A launcher on your PATH saves you from typing <code>conda activate</code> forever.</p></div>
+          </li>
+          <li class="rise"><span class="n">02</span>
+            <div><h3>Put the token in the Keychain</h3>
+            <p><code>scriba token hf_…</code>. It goes into the Keychain rather than into a file in your home directory.</p></div>
+          </li>
+          <li class="rise"><span class="n">03</span>
+            <div><h3>Accept three model licences</h3>
+            <p>speaker-diarization-3.1, segmentation-3.0 and speaker-diarization-community-1, on the same account as the token. Miss one and the download fails with a bare 403.</p></div>
+          </li>
+          <li class="rise"><span class="n">04</span>
+            <div><h3>Run it</h3>
+            <p>Then name the voices once. Every recording after that arrives with the names already filled in.</p></div>
+          </li>
+        </ol>
+      </div>
+      <div class="rise">
+<pre><span class="c"># the language is worked out on its own</span>
+scriba run recording.m4a
+
+<span class="c"># knowing the number of people helps more
+# than any other setting</span>
+scriba run meeting.m4a <span class="p">--min-speakers</span> 2 \
+                       <span class="p">--max-speakers</span> 2
+
+<span class="c"># who is who, before you decide</span>
+scriba dossier meeting.m4a
+
+<span class="c"># name them once</span>
+scriba name meeting.m4a \
+  SPEAKER_00=Ada SPEAKER_01=Rafiq
+
+<span class="c"># and from here on</span>
+scriba voices list
+scriba watch ~/Memos
+scriba jobs list</pre>
+        <figcaption style="margin-top:1rem">
+          The macOS app runs this same command and reads its JSON. There is no second
+          copy of the logic to drift apart a day later.
+        </figcaption>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap footer-grid">
+    <div>
+      <div class="wordmark" style="margin:0 0 0.75rem">
+        <svg width="18" height="18" viewBox="0 0 32 32" aria-hidden="true">
+          <g fill="#E0A458"><rect x="5" y="13" width="2" height="6"/><rect x="11" y="7" width="2" height="18"/>
+          <rect x="17" y="10" width="2" height="12"/><rect x="23" y="14" width="2" height="4"/></g>
+        </svg>
+        scriba
+      </div>
+      MIT licensed. Built on
+      <a href="https://github.com/m-bain/whisperX">whisperX</a> and
+      <a href="https://github.com/pyannote/pyannote-audio">pyannote</a>.
+    </div>
+    <div>
+      <a href="https://github.com/eugenionerelli/scriba">Source</a> &nbsp;·&nbsp;
+      <a href="https://github.com/eugenionerelli/scriba#install">Install</a> &nbsp;·&nbsp;
+      <a href="https://github.com/eugenionerelli/scriba/issues">Issues</a>
+    </div>
+    <div style="max-width:34ch">
+      The conversation in the screenshots is invented and the voices are speech
+      synthesis. <code>tools/make-demo.py</code> rebuilds it.
+    </div>
+  </div>
+</footer>
+
+<script>
+// Entrance and the speed bars. Both are decoration, so both check whether the
+// visitor asked for less motion before doing anything at all.
+(function () {
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  document.querySelectorAll('.bar-fill').forEach(function (el) {
+    if (reduced) el.style.width = el.dataset.w + '%';
+  });
+
+  if (!('IntersectionObserver' in window)) {
+    document.querySelectorAll('.rise').forEach(function (el) { el.classList.add('in'); });
+    document.querySelectorAll('.bar-fill').forEach(function (el) { el.style.width = el.dataset.w + '%'; });
+    return;
+  }
+
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (!e.isIntersecting) return;
+      e.target.classList.add('in');
+      e.target.querySelectorAll('.bar-fill').forEach(function (bar, i) {
+        setTimeout(function () { bar.style.width = bar.dataset.w + '%'; }, reduced ? 0 : 90 * i);
+      });
+      io.unobserve(e.target);
+    });
+  }, { rootMargin: '0px 0px -8% 0px', threshold: 0.15 });
+
+  document.querySelectorAll('.rise').forEach(function (el) { io.observe(el); });
+})();
+</script>
+</body>
+</html>
