@@ -163,16 +163,31 @@ Markdown, text, SRT, VTT and JSON.
 
 ## Install
 
-Needs Python 3.10 or newer, `ffmpeg`, and a Hugging Face account for the pyannote
-models.
+macOS with Apple Silicon, Python 3.10 or newer, `ffmpeg`, and a Hugging Face account
+for the pyannote models. Set aside a few gigabytes and a few minutes: the
+dependencies pull in torch, and the first run downloads the `large-v3` weights.
+
+```bash
+brew install ffmpeg
+```
+
+The Python side wants an environment of its own, because whisperX and pyannote pin a
+torch that has no business on the system interpreter. Conda if you have it:
 
 ```bash
 conda create -n scriba python=3.11 -y && conda activate scriba
 pip install git+https://github.com/eugenionerelli/scriba
 ```
 
-That puts the `scriba` command inside the environment and nowhere else. Leave it there
-and every use starts with `conda activate scriba`; forget that step and the shell says
+A plain virtual environment does the same job:
+
+```bash
+python3 -m venv ~/.venvs/scriba && source ~/.venvs/scriba/bin/activate
+pip install git+https://github.com/eugenionerelli/scriba
+```
+
+Either way the `scriba` command lives inside that environment and nowhere else, so
+every use starts by activating it. Forget that step and the shell says
 `command not found`, which is the least informative thing it could say. A launcher on
 the PATH is worth the thirty seconds:
 
@@ -180,13 +195,27 @@ the PATH is worth the thirty seconds:
 mkdir -p ~/.local/bin
 cat > ~/.local/bin/scriba <<'EOF'
 #!/bin/zsh
+# Set SCRIBA_BIN to the scriba inside your environment if none of these is right.
 ENV_NAME="${SCRIBA_ENV:-scriba}"
-exec "/opt/homebrew/Caskroom/miniforge/base/envs/${ENV_NAME}/bin/python" -m scriba.cli "$@"
+for candidate in "$SCRIBA_BIN" \
+                 "$HOME/.venvs/$ENV_NAME/bin/scriba" \
+                 "$HOME/miniforge3/envs/$ENV_NAME/bin/scriba" \
+                 "$HOME/miniconda3/envs/$ENV_NAME/bin/scriba" \
+                 "$HOME/anaconda3/envs/$ENV_NAME/bin/scriba" \
+                 "/opt/homebrew/Caskroom/miniforge/base/envs/$ENV_NAME/bin/scriba"; do
+    [[ -x "$candidate" ]] && exec "$candidate" "$@"
+done
+print -u2 "scriba: nothing called '$ENV_NAME' in any of the usual places."
+print -u2 "        Set SCRIBA_BIN to the scriba inside your environment."
+exit 1
 EOF
 chmod +x ~/.local/bin/scriba
 ```
 
-Check that `~/.local/bin` is on your `PATH`, and `scriba` works from any shell.
+Check that `~/.local/bin` is on your `PATH`, and `scriba` works from any shell. The
+loop matters more than it looks: the path to a conda environment depends on how conda
+was installed, and a launcher that hardcodes one of them fails with a message that
+never mentions scriba.
 
 The pyannote token goes into the Keychain rather than into a file:
 
@@ -232,6 +261,10 @@ scriba voices list                    # who is on file
 scriba watch ~/Memos                  # transcribes every audio file that lands there
 scriba jobs list                      # what has been processed, and how far it got
 ```
+
+`watch` keeps its bookkeeping in a `.scriba-done` folder inside the folder it is
+watching, and a file that failed is recorded there too, so it is not retried on the
+next pass. Delete its entry to try it again.
 
 `jobs list` exists because the job folder is not somewhere anybody browses. The names
 are slugs with a hash on the end, and "did I ever transcribe that one" otherwise has no
@@ -297,8 +330,13 @@ without checking. Voices with very little speech are flagged as probable artefac
 which is usually what they are, somebody else's murmured agreement promoted to a
 person.
 
-On first run, open Settings and point it at the Python of the environment where you
-installed `scriba`.
+On first run, open Settings. The app needs the Python of the environment where you
+installed `scriba`, and both fields say whether what you typed is there. The second
+field, the package folder, only matters when you are running from a clone; a pip
+install can leave it alone.
+
+A run can be stopped from the progress panel, and quitting the app stops the engine
+with it.
 
 ## Speed, and why it is what it is
 
@@ -319,7 +357,7 @@ Spanish audio through both versions, same settings, warm model cache:
 
 Transcription and diarization are where the time goes, and no setting changes that: it
 is the library. The job cache exists for this reason, so you pay it once. Alignment,
-the stage that sounds expensive, costs 13 seconds.
+the stage that sounds expensive, costs 14 seconds.
 
 The newer whisperX is 26% faster on the transcription, which is not the reason to move
 to it. In 3.3.1 every token containing digits came out of the aligner with no timestamp
@@ -385,9 +423,13 @@ that reported a file nobody could identify as its most confident result.
 Run both checks before a commit:
 
 ```bash
-python tools/stylecheck.py README.md scriba/*.py     # the source
+python tools/stylecheck.py --code README.md scriba/*.py macapp/Sources/Scriba/*.swift
 python tools/check-output-style.py                   # what the source produces
 ```
+
+`--code` restricts the check to comments, docstrings and strings shown to a person.
+Without it the banned word list is applied to identifiers as well, and every sort
+in the codebase comes back as a finding for the argument it sorts by.
 
 The second one exists because the first is not enough. Every document scriba writes is
 assembled from string fragments, so each line can pass on its own and the finished file

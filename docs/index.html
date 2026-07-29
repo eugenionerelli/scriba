@@ -350,6 +350,10 @@ footer a:hover { color: var(--amber); }
           and it is recognised in every recording after that. The audio never leaves
           your machine.
         </p>
+        <p class="lede" style="font-size:0.95rem;color:var(--text-faint);margin-top:1rem">
+          macOS on Apple Silicon. Python, ffmpeg and a Hugging Face account for the
+          pyannote models. The app is built from the repository, not downloaded.
+        </p>
         <div class="actions">
           <a class="btn btn-solid" href="https://github.com/eugenionerelli/scriba">
             <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
@@ -370,7 +374,7 @@ footer a:hover { color: var(--amber); }
       <div class="stat"><b>35.7s</b><span>diarization on Metal, down from 226s on CPU</span></div>
       <div class="stat"><b>8m 13s</b><span>end to end for 6:45 of audio on an M4</span></div>
       <div class="stat"><b>41</b><span>real turns where whisper alone gave 16 blocks</span></div>
-      <div class="stat"><b>0</b><span>bytes of audio sent anywhere</span></div>
+      <div class="stat"><b>0</b><span>bytes of audio sent anywhere, and pyannote's own telemetry switched off</span></div>
     </div>
   </div>
 </header>
@@ -431,6 +435,13 @@ footer a:hover { color: var(--amber); }
       <div class="ff"><b>burro</b><span class="arrow">heard as</span><b>burro</b><span>donkey becomes butter</span></div>
       <div class="ff"><b>éxito</b><span class="arrow">heard as</span><b>esito</b><span>success becomes outcome</span></div>
     </div>
+
+    <p class="rise" style="margin-top:1.5rem;font-size:0.9rem;color:#6B6355;max-width:60ch">
+      Two of those four are spelled the same in both languages, so nothing is
+      misheard: the damage is done in the translation. They are the textbook pairs,
+      shown for the shape of the failure. A real recording gets it in every sentence
+      at once.
+    </p>
 
     <blockquote class="pull rise">
       It does this to every sentence at once, and each one comes out plausible.
@@ -534,6 +545,31 @@ footer a:hover { color: var(--amber); }
   </div>
 </section>
 
+<!-- section 4b -->
+<section class="tight">
+  <div class="wrap">
+    <p class="eyebrow rise">One thing worth knowing</p>
+    <div class="split top">
+      <div class="rise"><h2>pyannote reports<br>home by default.</h2></div>
+      <div class="rise">
+        <p class="lede">
+          pyannote 4 ships a telemetry module. Its own <code>config.yaml</code> sets
+          <code>metrics_enabled: true</code>, and it contacts an endpoint at
+          pyannote.ai on every model load and every file processed.
+        </p>
+        <p>
+          scriba turns it off before any import path can reach pyannote, because the
+          flag is read once at import time and setting it afterwards does nothing.
+          If you use pyannote directly for recordings of private conversations, set
+          <code>PYANNOTE_METRICS_ENABLED=false</code> yourself. It is the sort of
+          default that a claim about audio never leaving your machine has to account
+          for rather than talk around.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- section 5 -->
 <section id="install">
   <div class="wrap">
@@ -555,8 +591,8 @@ footer a:hover { color: var(--amber); }
             <p>speaker-diarization-3.1, segmentation-3.0 and speaker-diarization-community-1, on the same account as the token. Miss one and the download fails with a bare 403.</p></div>
           </li>
           <li class="rise"><span class="n">04</span>
-            <div><h3>Run it</h3>
-            <p>Then name the voices once. Every recording after that arrives with the names already filled in.</p></div>
+            <div><h3>Run it, and name the voices once</h3>
+            <p>Every recording after that arrives with the names already filled in. For the window in these screenshots, <code>cd macapp &amp;&amp; ./build.sh</code>: it is built from the repository rather than downloaded, and it drives the same command line.</p></div>
           </li>
         </ol>
       </div>
