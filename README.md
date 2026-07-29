@@ -257,10 +257,15 @@ scriba dossier meeting.m4a
 # assign the names, and from here on they are remembered
 scriba name meeting.m4a SPEAKER_00=Ada SPEAKER_01=Rafiq
 
+scriba show meeting.m4a               # where the document went, and what else was written
 scriba voices list                    # who is on file
 scriba watch ~/Memos                  # transcribes every audio file that lands there
 scriba jobs list                      # what has been processed, and how far it got
 ```
+
+`show --reveal` opens the folder in the Finder. It exists because a run prints its
+paths and then scrolls away, and a week later the job folder is a slug with a hash
+on the end.
 
 `watch` keeps its bookkeeping in a `.scriba-done` folder inside the folder it is
 watching, and a file that failed is recorded there too, so it is not retried on the

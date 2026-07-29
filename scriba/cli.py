@@ -162,11 +162,15 @@ def name(
 def watch(
     folder: Path = typer.Argument(..., help="Folder to watch"),
     language: str = typer.Option("auto", "--lang", "-l"),
+    min_speakers: int = typer.Option(None, "--min-speakers"),
     max_speakers: int = typer.Option(None, "--max-speakers"),
 ):
     """Watch a folder: every audio file that lands there is transcribed on its own."""
     from .watch import watch as _watch
-    s = _settings(language, None, None, max_speakers, False)
+    # Both bounds, like `run`. Only the upper one was here, and the number of
+    # people in the room is the setting that moves the result most, so a watched
+    # folder of two-person calls could not be told the one thing worth telling it.
+    s = _settings(language, None, min_speakers, max_speakers, False)
     _watch(folder, s, report=lambda m: console.print(m, style="dim",
                                                     markup=False, highlight=False))
 
@@ -266,9 +270,13 @@ def whoami(
                   "Prints from different days and rooms are what make the matching hold up.")
 
 
-@app.command()
+@app.command(hidden=True)
 def info(file: Path):
-    """Job status as JSON. This is the channel the macOS app talks through."""
+    """Job status as JSON. This is the channel the macOS app talks through.
+
+    Hidden: it is a wire format, and a list of things a person can do should not
+    have a wire format in it.
+    """
     job = Job(file)
     turns_path = job.dir / "turns.json"
     payload = {
@@ -281,6 +289,37 @@ def info(file: Path):
         "audio": str(job.wav),
     }
     print(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+@app.command()
+def show(
+    file: Path = typer.Argument(..., help="A recording already processed"),
+    reveal: bool = typer.Option(False, "--reveal", help="Open the folder in the Finder"),
+):
+    """Where the document for this recording is, and what else was written.
+
+    The run prints a list of paths and then scrolls away. Coming back to a
+    recording a week later, the job folder is a slug with a hash on the end and
+    the answer to "where did that go" was to open files until one matched.
+    """
+    import subprocess
+
+    job = Job(file)
+    outdir = job.dir / "output"
+    written = sorted(outdir.glob("*")) if outdir.exists() else []
+    if not written:
+        console.print(f"Nothing written for {file.name} yet. Run it first:",
+                      markup=False, highlight=False)
+        console.print(f'  scriba run "{file}"', markup=False, highlight=False)
+        raise typer.Exit(1)
+
+    main = next((p for p in written if p.name.endswith("(source).md")), written[0])
+    console.print(str(main), markup=False, highlight=False)
+    for p in written:
+        if p != main:
+            console.print(f"  {p.name}", style="dim", markup=False, highlight=False)
+    if reveal:
+        subprocess.run(["open", "-R", str(main)], check=False)
 
 
 @app.command()
