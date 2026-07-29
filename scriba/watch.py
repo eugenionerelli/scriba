@@ -40,13 +40,21 @@ def watch(
 
     seen: dict[Path, int] = {}
     processed: set[str] = {p.name for p in done_dir.glob("*")}
-    # Files that failed during this run. Kept in memory rather than on disk: not
-    # retrying every five seconds is right, never retrying is not. Most of the ways
-    # this fails are the same for every file and get fixed between runs, and one
-    # marker on disk cannot tell "this file is unusable" from "ffmpeg was not on
-    # the PATH that afternoon". A folder full of recordings and no transcripts,
-    # with nothing in the log, is the worst version of this.
-    failed: set[str] = set()
+    # Files that failed during this run, and the size they had when they did.
+    #
+    # In memory rather than on disk: not retrying every five seconds is right,
+    # never retrying is not. Most of the ways this fails are the same for every
+    # file and get fixed between runs, and one marker on disk cannot tell "this
+    # file is unusable" from "ffmpeg was not on the PATH that afternoon". A folder
+    # full of recordings and no transcripts, with nothing in the log, is the worst
+    # version of this.
+    #
+    # The size is what makes the obvious fix work. Somebody whose export came out
+    # truncated re-exports it and drops it in under the same name, which is the
+    # first thing anyone tries. Keyed by name alone that does nothing until the
+    # watcher is restarted; keyed by name and size, different bytes get a fresh
+    # attempt and identical bytes still do not.
+    failed: dict[str, int] = {}
 
     report(f"watching {folder}  (ctrl-c to stop)")
     if processed:
@@ -55,18 +63,21 @@ def watch(
     while True:
         try:
             for path in sorted(folder.iterdir()):
-                if (not path.is_file() or not is_audio(path)
-                        or path.name in processed or path.name in failed):
-                    continue
-
                 try:
+                    if not path.is_file() or not is_audio(path):
+                        continue
+                    if path.name in processed:
+                        continue
                     size = path.stat().st_size
                 except OSError:
                     # Moved, renamed or evicted by iCloud between the listing and
                     # here. It used to take the watcher down with it, and a watcher
                     # that has silently exited looks exactly like one with nothing
-                    # to do.
+                    # to do. is_file() stats too, so it is inside the guard.
                     seen.pop(path, None)
+                    continue
+
+                if failed.get(path.name) == size:
                     continue
                 if seen.get(path) != size:
                     # Still being copied (or still syncing from iCloud): retry next round.
@@ -87,7 +98,7 @@ def watch(
                     report(f"   error: {exc}")
                     report("   left in place: it will be tried again next time "
                            "you start the watcher")
-                    failed.add(path.name)
+                    failed[path.name] = size
                 finally:
                     seen.pop(path, None)
 

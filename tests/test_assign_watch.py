@@ -640,17 +640,14 @@ def test_a_file_that_failed_and_then_succeeds_is_marked_done_only_once(harness):
     assert harness.ran == []
 
 
-def test_a_failed_file_replaced_while_the_watcher_runs_waits_for_the_next_one(harness):
-    """Current shape of `failed`, pinned rather than admired.
+def test_a_failed_file_replaced_while_the_watcher_runs_is_tried_again(harness):
+    """The obvious fix works without a restart.
 
-    The set holds names, and the name is checked before the size, so re-exporting
-    the recording and dropping it in under the same name, the first thing anyone
-    does when told a file could not be transcribed, does not get it looked at again
-    this run. The 900-byte replacement below sits there untouched, and only the
-    restart the log promised picks it up. Keying `failed` on the size as well, or
-    dropping the name from it when the size changes, would make the obvious fix work
-    without the restart. If that changes, this test changes with it: the second
-    assertion is the whole difference.
+    Told a recording could not be transcribed, the first thing anyone does is
+    export it again and drop it in under the same name. `failed` remembers the
+    size along with the name, so different bytes get a fresh attempt while
+    identical bytes still do not: the five-second retry loop stays closed and the
+    user's own correction is not ignored until they think to restart the watcher.
     """
     harness.drop("rota.m4a", size=100)
     harness.failing.add("rota.m4a")
@@ -661,10 +658,21 @@ def test_a_failed_file_replaced_while_the_watcher_runs_waits_for_the_next_one(ha
 
     harness.between[2] = re_export         # right after the attempt that failed
     harness.run(rounds=6)
-    assert harness.ran == ["rota.m4a"]                  # attempted once
-    assert harness.built == [("rota.m4a", 100)]         # the good copy never looked at
-    assert harness.markers() == []
 
-    harness.run(rounds=3)                  # the restart the user was told about
-    assert harness.built == [("rota.m4a", 900)]
+    assert harness.ran == ["rota.m4a", "rota.m4a"]      # once broken, once whole
+    assert harness.built[-1] == ("rota.m4a", 900)       # the good copy was used
     assert harness.markers() == ["rota.m4a"]
+
+
+def test_a_failed_file_left_exactly_as_it_was_is_not_tried_again(harness):
+    """The other half of the same rule.
+
+    Same name and same size means the same file, so nothing is retried every five
+    seconds. This is what keying on the size must not cost.
+    """
+    harness.drop("rota.m4a", size=100)
+    harness.failing.add("rota.m4a")
+
+    harness.run(rounds=6)
+    assert harness.ran == ["rota.m4a"]
+    assert harness.markers() == []
