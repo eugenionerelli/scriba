@@ -18,7 +18,7 @@ struct VoiceMatch: Codable, Hashable {
 }
 
 /// The state of a job, exactly as `scriba info` writes it.
-struct JobInfo: Codable {
+struct JobInfo: Codable, Equatable {
     let jobDir: String
     let source: String
     let turns: [Turn]
@@ -32,7 +32,7 @@ struct JobInfo: Codable {
     }
 }
 
-struct JobState: Codable {
+struct JobState: Codable, Equatable {
     var duration: Double?
     var language: String?
     var languageNote: String?

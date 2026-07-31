@@ -96,7 +96,11 @@ struct ResultPanel: View {
 
             Button {
                 guard let f = file else { return }
-                engine.applyNames(file: f, mapping: drafts, enroll: enrollOnSave)
+                engine.applyNames(file: f, mapping: drafts, enroll: enrollOnSave) { _ in
+                    // The sidebar row carries the names. Without this it kept
+                    // showing the old ones, or none, for the rest of the session.
+                    NotificationCenter.default.post(name: .scribaRefresh, object: nil)
+                }
             } label: {
                 Label("Save the names and rewrite the files", systemImage: "checkmark.circle")
             }

@@ -6,9 +6,32 @@ import Foundation
 /// reads its output to follow where it has got to, and re-reads the state once it is done.
 /// That is deliberate. The engine has to stay usable on its own from the terminal,
 /// and an app that duplicates the logic starts drifting the day after.
+/// The part of a run that changes several times a second.
+///
+/// Kept apart from the Engine on purpose. When these lived on the Engine, every
+/// publish rebuilt every view observing it, which was the whole window: the
+/// sidebar list, the toolbar and whatever was in the detail pane, four times a
+/// second for the length of a transcription. Only the two views that draw
+/// progress observe this one.
+@MainActor
+final class RunState: ObservableObject {
+    @Published var phase: Phase = .idle
+    @Published var lastLine = ""
+    @Published var progress: Double?
+
+    func reset(to phase: Phase) {
+        self.phase = phase
+    }
+}
+
 @MainActor
 final class Engine: ObservableObject {
 
+    /// Live progress, observed only where it is drawn.
+    let live = RunState()
+
+    /// Where the run has got to. Published because the queue and the panels
+    /// switch on it, and it changes seven times in a run rather than hundreds.
     @Published var phase: Phase = .idle
 
     /// The newest line worth showing, and how far the current stage has got.
@@ -18,13 +41,11 @@ final class Engine: ObservableObject {
     /// republished the entire array and SwiftUI rebuilt everything observing this
     /// object, sidebar included. The window went sticky for the length of a
     /// transcription, which is exactly as long as somebody most wants to use it.
-    @Published var lastLine = ""
-    @Published var progress: Double?
-
     /// Kept for the failure message. Not published: nothing draws from it while
     /// the job runs, and republishing it was the whole problem.
     private(set) var log: [String] = []
     private var lastPublish = Date.distantPast
+    private var residue = ""
     @Published var info: JobInfo?
     @Published var speakers: [Speaker] = []
     @Published var errorText: String?
@@ -116,12 +137,25 @@ final class Engine: ObservableObject {
         launch(args, on: file, startingPhase: .preparing, onFinish: onFinish)
     }
 
-    func applyNames(file: URL, mapping: [String: String], enroll: Bool) {
+    /// True while `scriba name` is running, as opposed to a transcription.
+    ///
+    /// The two are different jobs of work and the interface said the same thing
+    /// about both: pressing Save showed a progress strip with an empty filename
+    /// walking through "preparing the audio", which is not what saving a name
+    /// does and not how long it takes.
+    @Published private(set) var isNaming = false
+
+    func applyNames(file: URL, mapping: [String: String], enroll: Bool,
+                    onFinish: ((Outcome) -> Void)? = nil) {
         guard !isRunning else { return }
         var args = ["-m", "scriba.cli", "name", file.path]
         args += mapping.filter { !$0.value.isEmpty }.map { "\($0.key)=\($0.value)" }
         if !enroll { args.append("--no-enroll") }
-        launch(args, on: file, startingPhase: .identifying)
+        isNaming = true
+        launch(args, on: file, startingPhase: .identifying) { [weak self] outcome in
+            self?.isNaming = false
+            onFinish?(outcome)
+        }
     }
 
     private func launch(_ args: [String], on file: URL, startingPhase: Phase,
@@ -130,10 +164,10 @@ final class Engine: ObservableObject {
         wasCancelled = false
         errorText = nil
         log.removeAll()
-        lastLine = ""
-        progress = nil
         lastPublish = .distantPast
+        residue = ""
         phase = startingPhase
+        live.reset(to: startingPhase)
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: Self.pythonPath)
@@ -149,6 +183,14 @@ final class Engine: ObservableObject {
         env["PYTHONUNBUFFERED"] = "1"
         // Each audio library opens its own thread pool; without this cap they fight
         // over the same cores and end up slower, not faster.
+        // An app launched from the Finder inherits a PATH with almost nothing on
+        // it, and the engine shells out to ffmpeg and ffprobe. Without this the
+        // first stage failed with "has no audio track", which is a confident,
+        // specific and wrong thing to say about a file that plays fine, and it
+        // only happened for people who did not start the app from a terminal.
+        let extraPath = [URL(fileURLWithPath: Self.pythonPath).deletingLastPathComponent().path,
+                         "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        env["PATH"] = (extraPath + [env["PATH"] ?? ""]).joined(separator: ":")
         env["TOKENIZERS_PARALLELISM"] = "false"
         env["OMP_NUM_THREADS"] = String(max(ProcessInfo.processInfo.activeProcessorCount / 2, 1))
         proc.environment = env
@@ -177,14 +219,28 @@ final class Engine: ObservableObject {
         errPipe.fileHandleForReading.readabilityHandler = onData
 
         proc.terminationHandler = { [weak self] p in
+            // Whatever arrived after the last callback. The reason a run failed is
+            // usually in the final few lines, and they were being dropped.
+            let tail = (try? outPipe.fileHandleForReading.readToEnd()).flatMap { $0 }
+            let errTail = (try? errPipe.fileHandleForReading.readToEnd()).flatMap { $0 }
             Task { @MainActor in
                 outPipe.fileHandleForReading.readabilityHandler = nil
                 errPipe.fileHandleForReading.readabilityHandler = nil
+                for data in [tail, errTail] {
+                    if let data, let text = String(data: data, encoding: .utf8) {
+                        self?.ingest(text + "\n")
+                    }
+                }
+                // Stop, then start again straight away, and this handler belongs
+                // to the process that was killed. Letting it run marked the new
+                // run as failed and cleared the state out from under it.
+                guard self?.process == nil || self?.process === p else { return }
                 self?.isRunning = false
                 self?.process = nil
                 if self?.wasCancelled == true {
                     self?.wasCancelled = false
                     self?.phase = .idle
+                    self?.live.reset(to: .idle)
                     self?.errorText = nil
                     onFinish?(.cancelled)
                     return
@@ -195,9 +251,14 @@ final class Engine: ObservableObject {
                     self?.reload(file: file)
                 } else {
                     self?.phase = .failed
-                    if self?.errorText == nil {
-                        self?.errorText = self?.log.suffix(6).joined(separator: "\n")
-                            ?? "The engine exited with code \(p.terminationStatus)."
+                    // Always something. The old version tested for nil, and an
+                    // empty log produced an empty string, so the alert came up
+                    // with a title, a Close button and no text at all.
+                    if (self?.errorText ?? "").isEmpty {
+                        let tail = self?.log.suffix(6).joined(separator: "\n") ?? ""
+                        self?.errorText = tail.isEmpty
+                            ? "The engine exited with code \(p.terminationStatus) and said nothing."
+                            : "Exit code \(p.terminationStatus).\n\n" + tail
                     }
                 }
                 onFinish?(ok ? .finished : .failed)
@@ -222,6 +283,7 @@ final class Engine: ObservableObject {
         process = nil
         isRunning = false
         phase = .idle
+        live.reset(to: .idle)
         errorText = nil
     }
 
@@ -235,7 +297,26 @@ final class Engine: ObservableObject {
         process = nil
     }
 
-    private func ingest(_ text: String) {
+    private func ingest(_ chunk: String) {
+        // A pipe hands over bytes, not lines. Splitting the chunk as if it were
+        // lines cut one in half wherever the boundary fell, and the half that
+        // carried the phase prefix was lost: a stage that takes minutes never
+        // ticked. Whatever comes after the last newline waits for the next chunk.
+        let combined = residue + chunk
+        let lastBreak = combined.lastIndex(of: "\n")
+        let text: String
+        if let lastBreak {
+            text = String(combined[..<lastBreak])
+            residue = String(combined[combined.index(after: lastBreak)...])
+        } else {
+            residue = combined
+            // Nothing complete yet. A single line longer than this is the engine
+            // printing a progress bar with no newline, so do not hold it for ever.
+            guard residue.count > 4096 else { return }
+            text = residue
+            residue = ""
+        }
+
         var newestPhase: Phase?
         var newestLine: String?
         var newestProgress: Double?
@@ -276,10 +357,11 @@ final class Engine: ObservableObject {
         lastPublish = now
         if let p = newestPhase, p != phase {
             phase = p
-            progress = nil
+            live.phase = p
+            live.progress = nil
         }
-        if let pct = newestProgress { progress = pct }
-        if let line = newestLine { lastLine = line }
+        if let pct = newestProgress { live.progress = pct }
+        if let line = newestLine { live.lastLine = line }
     }
 
     /// The percentage whisper prints while it decodes, if this line carries one.
@@ -287,10 +369,15 @@ final class Engine: ObservableObject {
     /// A bar that moves is the difference between "this is working" and "this has
     /// hung", and the engine has been printing the number all along.
     static func percentage(in line: String) -> Double? {
-        guard let range = line.range(of: #"(\d{1,3}(\.\d+)?)%"#, options: .regularExpression)
+        // Anchored to what whisper prints. Matching any percentage anywhere meant
+        // the confidence figures in the language line drove the bar: two seconds
+        // in it read 100% under "Detecting the language", then fell back to
+        // nothing, which reads as a bug rather than as progress.
+        guard let range = line.range(of: #"Progress:\s*(\d{1,3}(\.\d+)?)%"#,
+                                     options: .regularExpression)
         else { return nil }
-        let text = line[range].dropLast()
-        guard let value = Double(text) else { return nil }
+        let digits = line[range].drop(while: { !$0.isNumber }).prefix(while: { $0.isNumber || $0 == "." })
+        guard let value = Double(digits) else { return nil }
         return min(max(value / 100, 0), 1)
     }
 
@@ -308,14 +395,28 @@ final class Engine: ObservableObject {
     /// derived, and that still happens in exactly one place. Reading a file the
     /// engine wrote is not deriving anything, and if the shape ever changes the
     /// decoder fails loudly and the subprocess path below is still there.
+    /// Which job the interface is currently showing. A read that finishes after
+    /// the user has moved on, or after a background run has touched something
+    /// else, must not land: it used to replace the panel and empty the name
+    /// fields somebody was halfway through typing.
+    private(set) var showing: String?
+
     func load(jobDir: String, source: String) {
+        showing = jobDir
         let dir = URL(fileURLWithPath: jobDir)
         let fm = FileManager.default
 
         guard let stateData = fm.contents(atPath: dir.appendingPathComponent("state.json").path),
               let state = try? JSONDecoder().decode(JobState.self, from: stateData)
         else {
-            reload(file: URL(fileURLWithPath: source))     // fall back to the engine
+            // No readable state on disk. Falling through to the engine costs
+            // three seconds and, for a job folder that never got that far, ends
+            // in the same silence. Say so instead.
+            isLoadingState = false
+            info = nil
+            speakers = []
+            errorText = "This job has no readable state. It was probably "
+                      + "interrupted before it wrote anything. Run it again."
             return
         }
 
@@ -323,9 +424,15 @@ final class Engine: ObservableObject {
         let turns = fm.contents(atPath: turnsURL.path)
             .flatMap { try? JSONDecoder().decode([Turn].self, from: $0) } ?? []
 
-        let outputs = ((try? fm.contentsOfDirectory(atPath: dir.appendingPathComponent("output").path)) ?? [])
+        // The engine's own formats, not everything that ended up in the folder.
+        // Opening it in the Finder once put a .DS_Store in the list of produced
+        // documents, with a button offering to reveal it.
+        let written = Set(["md", "txt", "srt", "vtt", "json"])
+        let outDir = dir.appendingPathComponent("output")
+        let outputs = ((try? fm.contentsOfDirectory(atPath: outDir.path)) ?? [])
+            .filter { !$0.hasPrefix(".") && written.contains(($0 as NSString).pathExtension) }
             .sorted()
-            .map { dir.appendingPathComponent("output").appendingPathComponent($0).path }
+            .map { outDir.appendingPathComponent($0).path }
 
         let info = JobInfo(
             jobDir: jobDir, source: source, turns: turns, outputs: outputs,
@@ -333,6 +440,7 @@ final class Engine: ObservableObject {
             audio: dir.appendingPathComponent("audio16k.wav").path,
             state: state)
 
+        guard showing == jobDir else { return }
         isLoadingState = false
         self.info = info
         speakers = Self.buildSpeakers(from: info)
@@ -380,6 +488,9 @@ final class Engine: ObservableObject {
                 self.isLoadingState = false
                 if let problem { self.errorText = problem }
                 guard let result else { return }
+                // Same rule as load(jobDir:). A read that comes back after the
+                // selection moved on belongs to a different recording.
+                guard self.showing == nil || self.showing == result.jobDir else { return }
                 self.info = result
                 self.speakers = Self.buildSpeakers(from: result)
             }

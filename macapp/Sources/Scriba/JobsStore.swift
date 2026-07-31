@@ -27,10 +27,10 @@ struct JobSummary: Codable, Identifiable, Hashable {
     var label: String {
         switch state {
         case "done":        return "Ready to read"
-        case "transcribed": return "Transcribed, no output yet"
-        case "voices only": return "Voices found, not transcribed"
-        case "text only":   return "Text only"
-        default:            return "Not started"
+        case "transcribed": return "Transcribed, no document written"
+        case "voices only": return "Voices separated, words missing"
+        case "text only":   return "Words only, voices not separated"
+        default:            return "Started and produced nothing"
         }
     }
 
@@ -48,6 +48,10 @@ struct QueueItem: Identifiable, Hashable {
     let id = UUID()
     let url: URL
     var state: State = .waiting
+    /// Read once when the file joins the queue. Reading it from the estimate
+    /// meant opening every queued file's container on the main thread on every
+    /// redraw, which is why dropping a batch of recordings froze the window.
+    var minutes: Double?
 }
 
 /// The list of everything scriba has touched.
@@ -59,8 +63,22 @@ struct QueueItem: Identifiable, Hashable {
 final class JobsStore: ObservableObject {
     @Published var jobs: [JobSummary] = []
     @Published var isLoading = false
+    /// Set when the engine could not be asked. The difference between "you have
+    /// no recordings" and "I could not find out" matters: the second one used to
+    /// be shown as the first, on a machine holding dozens of transcripts.
+    @Published var problem: String?
+
+    /// For callers that need the list to be current before they act on it.
+    func reloadAndWait() async {
+        reload()
+        while isLoading { try? await Task.sleep(nanoseconds: 40_000_000) }
+    }
 
     func reload() {
+        // Reading the list starts a Python interpreter, which takes about three
+        // seconds. Command-tabbing in and out a few times used to put three or
+        // four of them on the processor at once, each one racing to publish.
+        guard !isLoading else { return }
         isLoading = true
         let python = Engine.pythonPath
         let root = Engine.enginePath
@@ -77,17 +95,32 @@ final class JobsStore: ObservableObject {
             proc.standardOutput = pipe
             proc.standardError = FileHandle.nullDevice
 
-            var loaded: [JobSummary] = []
+            var loaded: [JobSummary]?
+            var failure: String?
             if (try? proc.run()) != nil {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 proc.waitUntilExit()
-                loaded = (try? JSONDecoder().decode([JobSummary].self, from: data)) ?? []
+                if proc.terminationStatus != 0 {
+                    failure = "The engine exited with code \(proc.terminationStatus) "
+                            + "when asked for the list of recordings."
+                } else {
+                    loaded = try? JSONDecoder().decode([JobSummary].self, from: data)
+                    if loaded == nil { failure = "The list of recordings could not be read." }
+                }
+            } else {
+                failure = "Could not run \(python). Open Settings and check the path."
             }
 
             let result = loaded
+            let problem = failure
             await MainActor.run { [weak self] in
-                self?.jobs = result
-                self?.isLoading = false
+                guard let self else { return }
+                self.isLoading = false
+                self.problem = problem
+                // Only replace the list with one that was actually read. A failed
+                // read used to empty the sidebar, and the app looked like a fresh
+                // install with nothing in it.
+                if let result, result != self.jobs { self.jobs = result }
             }
         }
     }
