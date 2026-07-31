@@ -410,8 +410,20 @@ class Job:
         write_atomic(self.dir / "turns.json",
                      json.dumps(turns, ensure_ascii=False, indent=1))
 
+        return self.write_outputs(turns, segments, matches,
+                                  speech=dia.speech_time() if dia else {})
+
+    def write_outputs(self, turns: list[dict], segments: list[dict],
+                      matches: dict[str, dict], *, speech: dict[str, float]) -> JobResult:
+        """Everything after the words and the voices: names, briefing, documents.
+
+        Separate from run() so the documents can be rewritten from what is already
+        cached. Rewriting used to mean running the whole pipeline again, and after
+        any change to the settings that the cache keys on, that meant transcribing
+        an hour of audio to produce a file the engine could have written in a
+        second from data it already had.
+        """
         language = self.state.get("language", "it")
-        speech = dia.speech_time() if dia else {}
         profiles = naming.build_profiles(turns, speech, language, matches)
 
         dossier_path = self.dir / "who-is-who.md"
@@ -463,6 +475,33 @@ class Job:
             unresolved=unresolved, dossier_path=dossier_path,
             duration=self.state.get("duration", 0.0),
         )
+
+    def rewrite(self) -> JobResult:
+        """Write the documents again from the cache, transcribing nothing.
+
+        Needed whenever the shape of a document changes, or a format is added, or
+        an output file is lost. Without it the only way to get a document back was
+        to run the whole pipeline, and a change to any setting the ASR cache keys
+        on turns that into an hour of transcription for a file the engine already
+        has the words for.
+        """
+        turns_path = self.dir / "turns.json"
+        transcript = self.dir / "transcript.json"
+        if not turns_path.exists() or not transcript.exists():
+            raise ValueError(
+                f"{self.source.name} has nothing cached to write from. "
+                "Transcribe it first with `scriba run`.")
+
+        turns = json.loads(turns_path.read_text())
+        segments = json.loads(transcript.read_text()).get("segments", [])
+        matches = self.state.get("matches") or {}
+
+        speech: dict[str, float] = {}
+        for t in turns:
+            if t.get("speaker"):
+                speech[t["speaker"]] = speech.get(t["speaker"], 0.0) + (t["end"] - t["start"])
+
+        return self.write_outputs(turns, segments, matches, speech=speech)
 
     def speaker_labels(self) -> set[str]:
         """The speaker labels this job actually produced, read from the embeddings.

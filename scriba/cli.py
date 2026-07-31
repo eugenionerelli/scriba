@@ -292,6 +292,23 @@ def info(file: Path):
 
 
 @app.command()
+def export(
+    files: list[Path] = typer.Argument(..., help="Recordings already transcribed"),
+):
+    """Write the documents again from what is cached. Transcribes nothing.
+
+    For when a format is added, an output file is lost, or the shape of the
+    document changes. `run` would do it too, and would re-transcribe the audio
+    whenever a setting the cache keys on has moved since.
+    """
+    for f in files:
+        job = Job(f, report=lambda m: console.print(f"  {m}", style="dim",
+                                                    markup=False, highlight=False))
+        res = job.rewrite()
+        console.print(f"{f.name}: {len(res.outputs)} files", markup=False, highlight=False)
+
+
+@app.command()
 def show(
     file: Path = typer.Argument(..., help="A recording already processed"),
     reveal: bool = typer.Option(False, "--reveal", help="Open the folder in the Finder"),
