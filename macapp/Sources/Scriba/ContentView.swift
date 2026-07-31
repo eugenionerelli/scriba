@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var enrollOnSave = true
     @State private var isTargeted = false
     @State private var runningAll = false
+    @State private var filter = ""
 
     enum Selection: Hashable {
         case pending(UUID)
@@ -112,64 +113,76 @@ struct ContentView: View {
 
     private var sidebar: some View {
         List(selection: $selection) {
-            Section("Waiting") {
-                if queue.isEmpty {
-                    Text("Drop recordings anywhere in this window")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                } else {
+            if !queue.isEmpty {
+                Section("Waiting to be transcribed") {
                     ForEach(queue) { item in
                         QueueRow(item: item).tag(Selection.pending(item.id))
                     }
-                    .onDelete { queue.remove(atOffsets: $0) }
+                    .onDelete { offsets in
+                        // Never silently drop the one that is running.
+                        let doomed = offsets.map { queue[$0].id }
+                        queue.removeAll { doomed.contains($0.id) && $0.state != .running }
+                    }
                 }
             }
 
-            Section("Processed") {
-                if store.jobs.isEmpty && !store.isLoading {
-                    Text("Nothing yet").font(.callout).foregroundStyle(.secondary)
+            if let problem = store.problem {
+                Section {
+                    Label(problem, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
                 }
-                // Everything, including the jobs that produced nothing. Hiding
-                // those meant the app could neither show the residue of a failed
-                // run nor offer to clear it, while the terminal listed it plainly.
-                ForEach(store.jobs) { job in
+            }
+
+            // Two groups, because they are two different things to a reader. One
+            // has a document waiting; the other is a folder of intermediate files
+            // and a reason it stopped. They used to sit in one list called
+            // "Processed", distinguished by an icon, so the only way to find out
+            // which was which was to click and see.
+            group("Ready to read", jobs: ready, empty: emptyReadyText)
+            group("Not finished", jobs: unfinished, empty: nil)
+        }
+        .searchable(text: $filter, placement: .sidebar,
+                    prompt: "Recording or person")
+    }
+
+    @ViewBuilder
+    private func group(_ title: String, jobs: [JobSummary], empty: String?) -> some View {
+        if !jobs.isEmpty {
+            Section("\(title) (\(jobs.count))") {
+                ForEach(jobs) { job in
                     JobRowView(job: job).tag(Selection.job(job.jobDir))
                 }
             }
-        }
-        .safeAreaInset(edge: .bottom) {
-            if engine.isRunning {
-                RunningStrip(phase: engine.phase, progress: engine.progress,
-                             name: currentlyRunning,
-                             remaining: queue.filter { $0.state == .waiting }.count,
-                             onShow: { showRunning() },
-                             onStop: stopEverything)
-            } else if !queue.isEmpty {
-                VStack(spacing: 8) {
-                    Divider()
-                    Button {
-                        startAll()
-                    } label: {
-                        Label(queue.count == 1
-                              ? "Transcribe this one"
-                              : "Transcribe all \(queue.count)",
-                              systemImage: "play.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(engine.isRunning)
-
-                    if !estimate.isEmpty {
-                        Text(estimate)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                }
-                .padding(12)
-                .background(.bar)
+        } else if let empty {
+            Section(title) {
+                Text(empty).font(.callout).foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var emptyReadyText: String? {
+        store.isLoading ? "Reading the list…"
+            : filter.isEmpty ? "Nothing yet. Drop a recording anywhere in this window."
+            : "Nothing matches \(filter)."
+    }
+
+    /// The recordings with a document, newest first.
+    private var ready: [JobSummary] { matching.filter(\.isFinished) }
+
+    /// The ones that stopped somewhere along the way. Kept visible rather than
+    /// hidden: the residue of a run that failed is exactly what somebody comes
+    /// looking for, and it is also what takes up the disk.
+    private var unfinished: [JobSummary] { matching.filter { !$0.isFinished } }
+
+    /// Filter on the name of the recording and on the people in it, because
+    /// "the one with Ada in it" is how anybody actually looks for a conversation.
+    private var matching: [JobSummary] {
+        guard !filter.isEmpty else { return store.jobs }
+        let needle = filter.lowercased()
+        return store.jobs.filter { job in
+            job.source.lowercased().contains(needle)
+                || job.names.values.contains { $0.lowercased().contains(needle) }
         }
     }
 
@@ -179,15 +192,26 @@ struct ContentView: View {
     private var estimate: String {
         let waiting = queue.filter { $0.state == .waiting }
         guard !waiting.isEmpty else { return "" }
-        let minutes = waiting.compactMap { durationMinutes(of: $0.url) }.reduce(0, +)
+        let minutes = waiting.compactMap(\.minutes).reduce(0, +)
         guard minutes > 0 else { return "Runs for about as long as the recordings last." }
         return "About \(Int(minutes.rounded())) minutes of work, roughly the length of the audio."
     }
 
-    private func durationMinutes(of url: URL) -> Double? {
-        let asset = AVURLAsset(url: url)
-        let seconds = CMTimeGetSeconds(asset.duration)
-        return seconds.isFinite && seconds > 0 ? seconds / 60 : nil
+    /// Read the length once, off the main actor, and remember it on the item.
+    private func measure(_ id: UUID, _ url: URL) {
+        Task.detached(priority: .utility) {
+            let asset = AVURLAsset(url: url)
+            guard let duration = try? await asset.load(.duration) else { return }
+            let seconds = CMTimeGetSeconds(duration)
+            guard seconds.isFinite, seconds > 0 else { return }
+            await MainActor.run {
+                if let i = queueIndex(id) { queue[i].minutes = seconds / 60 }
+            }
+        }
+    }
+
+    private func queueIndex(_ id: UUID) -> Int? {
+        queue.firstIndex(where: { $0.id == id })
     }
 
     // MARK: - detail
@@ -201,9 +225,8 @@ struct ContentView: View {
         // sidebar says what is happening from wherever you are, and selecting the
         // running recording still gives you the full panel.
         if let running = queue.first(where: { $0.state == .running }),
-           case .pending(let id) = selection, id == running.id {
-            ProgressPanel(phase: engine.phase, line: engine.lastLine,
-                          progress: engine.progress,
+           case .pending(let id) = selection, id == running.id, !engine.isNaming {
+            ProgressPanel(live: engine.live,
                           current: running.url.lastPathComponent,
                           remaining: queue.filter { $0.state == .waiting }.count,
                           onStop: stopEverything)
@@ -214,20 +237,33 @@ struct ContentView: View {
                          languages: languages, onStart: { start(item) })
         } else if case .job(let dir) = selection,
                   let job = store.jobs.first(where: { $0.jobDir == dir }) {
-            if let info = engine.info, info.jobDir == dir, !engine.speakers.isEmpty {
-                ResultPanel(engine: engine, info: info,
-                            file: URL(fileURLWithPath: job.sourcePath),
-                            enrollOnSave: $enrollOnSave)
-            } else {
-                JobPanel(job: job, loading: engine.isLoadingState)
-                    .onAppear {
-                        engine.load(jobDir: job.jobDir, source: job.sourcePath)
-                    }
+            Group {
+                if !job.isFinished {
+                    // A folder of intermediate files is not a transcript, and the
+                    // speaker panel rendered for one is a heading with nothing
+                    // under it and a button that cannot be pressed.
+                    UnfinishedPanel(job: job, onFinish: { finish(job) })
+                } else if let info = engine.info, info.jobDir == dir {
+                    ResultPanel(engine: engine, info: info,
+                                file: URL(fileURLWithPath: job.sourcePath),
+                                enrollOnSave: $enrollOnSave)
+                } else {
+                    JobPanel(job: job, loading: engine.isLoadingState)
+                }
+            }
+            // Keyed on the job, not on the view appearing. Clicking a second
+            // recording keeps the same view in the same place, so onAppear does
+            // not fire again: the title changed and the contents stayed on the
+            // recording before it, which is worse than showing nothing.
+            .task(id: job.jobDir) {
+                engine.load(jobDir: job.jobDir, source: job.sourcePath)
             }
         } else {
             Welcome(processed: store.jobs.count)
         }
     }
+
+    private var waitingCount: Int { queue.filter { $0.state == .waiting }.count }
 
     private var currentlyRunning: String {
         queue.first(where: { $0.state == .running })?.url.lastPathComponent ?? ""
@@ -240,6 +276,29 @@ struct ContentView: View {
         panel.allowsMultipleSelection = true
         panel.message = "Recordings to add to the queue. Nothing starts until you press Transcribe."
         if panel.runModal() == .OK { add(panel.urls) }
+    }
+
+    /// Move the selection onto the job the finished recording produced, and take
+    /// the row out of the queue. Needs the list to have been re-read first.
+    private func followFinished(_ item: QueueItem) {
+        Task {
+            await store.reloadAndWait()
+            let path = item.url.path
+            if let job = store.jobs.first(where: { $0.sourcePath == path }) {
+                queue.removeAll { $0.id == item.id }
+                selection = .job(job.jobDir)
+            }
+        }
+    }
+
+    /// Put an unfinished recording back in the queue, selected and ready.
+    private func finish(_ job: JobSummary) {
+        let url = URL(fileURLWithPath: job.sourcePath)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        add([url])
+        if let item = queue.first(where: { $0.url == url }) {
+            selection = .pending(item.id)
+        }
     }
 
     private func showRunning() {
@@ -265,7 +324,9 @@ struct ContentView: View {
     private func add(_ urls: [URL]) {
         let known = Set(queue.map(\.url))
         for url in urls where !known.contains(url) {
-            queue.append(QueueItem(url: url))
+            let item = QueueItem(url: url)
+            queue.append(item)
+            measure(item.id, url)
         }
         if selection == nil, let first = queue.first {
             selection = .pending(first.id)
@@ -281,6 +342,10 @@ struct ContentView: View {
             switch outcome {
             case .finished:
                 mark(item.id, .finished)
+                // Follow it into the list. The pane used to fall back to the
+                // setup screen, offering to transcribe again a recording that
+                // had just been transcribed, while the row sat under "Waiting".
+                followFinished(item)
             case .failed:
                 // The reason, not the fact. "Did not finish" was true and useless,
                 // and the alert carrying the real message is dismissed once.
@@ -289,7 +354,7 @@ struct ContentView: View {
                 // Asked for. Back in the queue rather than marked as broken.
                 mark(item.id, .waiting)
             }
-            store.reload()
+            if case .finished = outcome {} else { store.reload() }
             if runningAll, outcome != .cancelled { next() }
         }
     }
@@ -354,27 +419,138 @@ struct QueueRow: View {
 
 struct JobRowView: View {
     let job: JobSummary
+
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: job.isFinished ? "doc.text.fill" : "waveform")
                 .foregroundStyle(job.isFinished ? Color.accentColor : .secondary)
+                .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
-                Text(job.source).lineLimit(1)
-                HStack(spacing: 6) {
-                    if !job.recorded.isEmpty { Text(job.recorded) }
-                    if job.duration > 0 { Text("\(Int(job.duration / 60)) min") }
-                    if !job.names.isEmpty {
-                        Text(job.names.values.sorted().joined(separator: ", ")).lineLimit(1)
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text(job.source)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
+            // Without this the longest name in the list decides how wide the
+            // column wants to be, and the sidebar grew until it ran off the
+            // side of the screen.
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .help(job.names.isEmpty ? job.source
+              : job.source + " — " + job.names.values.sorted().joined(separator: ", "))
+    }
+
+    /// One line, in the order somebody scans it: when, how long, who.
+    private var subtitle: String {
+        var parts: [String] = []
+        if !job.recorded.isEmpty { parts.append(job.recorded) }
+        if job.duration > 0 { parts.append("\(Int(job.duration / 60)) min") }
+        if job.isFinished {
+            if !job.names.isEmpty {
+                parts.append(job.names.values.sorted().joined(separator: ", "))
+            } else if job.speakers > 0 {
+                parts.append(job.speakers == 1 ? "1 voice, unnamed"
+                                               : "\(job.speakers) voices, unnamed")
+            }
+        } else {
+            parts.append(job.label.lowercased())
+        }
+        return parts.joined(separator: "  ")
     }
 }
 
 // MARK: - panels
+
+/// A recording that started and stopped somewhere in the middle.
+///
+/// Says which part exists and which does not, in the order the work happens, and
+/// offers the one thing worth doing about it. The alternative, and what this
+/// replaced, was the speaker panel with nothing in it: a heading called "Who is
+/// speaking" over an empty space, and a save button that could not be pressed.
+struct UnfinishedPanel: View {
+    let job: JobSummary
+    let onFinish: () -> Void
+
+    private var sourceIsThere: Bool {
+        FileManager.default.fileExists(atPath: job.sourcePath)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(job.source).font(.title2).bold().textSelection(.enabled)
+                HStack(spacing: 14) {
+                    if !job.recorded.isEmpty {
+                        Label(job.recorded, systemImage: "calendar")
+                    }
+                    if job.duration > 0 {
+                        Label(humanDuration(job.duration), systemImage: "clock")
+                    }
+                }
+                .font(.callout).foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text(job.label).font(.headline)
+                Text(explanation).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+
+            if sourceIsThere {
+                Button(action: onFinish) {
+                    Label("Put it back in the queue", systemImage: "play.fill")
+                }
+                .controlSize(.large)
+                .buttonStyle(.borderedProminent)
+                Text("It picks up from what is already there. The stages it finished "
+                     + "are not done again.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Label("The recording is no longer at \(job.sourcePath)",
+                      systemImage: "questionmark.folder")
+                    .foregroundStyle(.orange)
+                Text("Put the file back where it was, or drop it in again as a new "
+                     + "recording. What was computed for it is still here.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting(
+                    [URL(fileURLWithPath: job.jobDir)])
+            } label: {
+                Label("Show what it produced", systemImage: "folder")
+            }
+            .buttonStyle(.link)
+
+            }
+            .padding(28)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var explanation: String {
+        switch job.state {
+        case "transcribed":
+            return "The words and the voices are both here. The documents were never "
+                 + "written, which is the last and quickest step."
+        case "voices only":
+            return "The voices were separated and the speech was never transcribed. "
+                 + "Transcription is the long part: it takes about as long as the "
+                 + "recording lasts."
+        case "text only":
+            return "The words are here and nobody was separated, so there is a "
+                 + "transcript with no idea of who said what."
+        default:
+            return "This run stopped before it produced anything. Nothing was kept "
+                 + "except the folder."
+        }
+    }
+}
 
 struct Welcome: View {
     let processed: Int
@@ -517,8 +693,7 @@ struct JobPanel: View {
 /// to be used. It says the stage in words, because a bar on its own tells you
 /// something is moving and not what it is doing.
 struct RunningStrip: View {
-    let phase: Phase
-    let progress: Double?
+    @ObservedObject var live: RunState
     let name: String
     let remaining: Int
     let onShow: () -> Void
@@ -531,8 +706,8 @@ struct RunningStrip: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name).font(.callout).lineLimit(1)
                     Text(remaining > 0
-                         ? "\(phase.rawValue.lowercased()), \(remaining) waiting"
-                         : phase.rawValue)
+                         ? "\(live.phase.rawValue.lowercased()), \(remaining) waiting"
+                         : live.phase.rawValue)
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 6)
@@ -541,7 +716,7 @@ struct RunningStrip: View {
                 }
                 .help("Stop, and put the queue back to waiting")
             }
-            if let progress {
+            if let progress = live.progress {
                 ProgressView(value: progress)
             } else {
                 ProgressView().progressViewStyle(.linear)
@@ -556,9 +731,7 @@ struct RunningStrip: View {
 }
 
 struct ProgressPanel: View {
-    let phase: Phase
-    let line: String
-    let progress: Double?
+    @ObservedObject var live: RunState
     let current: String
     let remaining: Int
     let onStop: () -> Void
@@ -569,7 +742,7 @@ struct ProgressPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(phase.rawValue).font(.title2).bold()
+                Text(live.phase.rawValue).font(.title2).bold()
                 if !current.isEmpty {
                     Text(current).font(.callout).foregroundStyle(.secondary)
                 }
@@ -579,7 +752,7 @@ struct ProgressPanel: View {
                 }
             }
             HStack(spacing: 14) {
-                if let progress {
+                if let progress = live.progress {
                     ProgressView(value: progress).progressViewStyle(.linear)
                     Text("\(Int(progress * 100))%")
                         .font(.system(.callout, design: .monospaced))
@@ -600,7 +773,7 @@ struct ProgressPanel: View {
             VStack(alignment: .leading, spacing: 9) {
                 ForEach(order, id: \.self) { p in
                     let idx = order.firstIndex(of: p) ?? 0
-                    let cur = order.firstIndex(of: phase) ?? 0
+                    let cur = order.firstIndex(of: live.phase) ?? 0
                     HStack(spacing: 10) {
                         Image(systemName: idx < cur ? "checkmark.circle.fill"
                               : idx == cur ? "circle.dotted" : "circle")
@@ -614,8 +787,8 @@ struct ProgressPanel: View {
             // The last engine line, so a long stage still looks alive. Whisper prints a
             // percentage as it goes, and that is the only proof on screen that the
             // machine is busy rather than stuck.
-            if !line.isEmpty {
-                Text(line).font(.system(size: 11, design: .monospaced))
+            if !live.lastLine.isEmpty {
+                Text(live.lastLine).font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(2).textSelection(.enabled)
             }
