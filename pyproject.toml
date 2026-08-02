@@ -30,8 +30,8 @@ dependencies = [
 dev = ["pytest>=8"]
 
 [project.urls]
-Homepage = "https://github.com/eugenionerelli/scriba"
-Issues = "https://github.com/eugenionerelli/scriba/issues"
+Homepage = "https://github.com/nerln/scriba"
+Issues = "https://github.com/nerln/scriba/issues"
 
 [project.scripts]
 scriba = "scriba.cli:main"

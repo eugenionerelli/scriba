@@ -182,14 +182,14 @@ torch that has no business on the system interpreter. Conda if you have it:
 
 ```bash
 conda create -n scriba python=3.11 -y && conda activate scriba
-pip install git+https://github.com/eugenionerelli/scriba
+pip install git+https://github.com/nerln/scriba
 ```
 
 A plain virtual environment does the same job:
 
 ```bash
 python3 -m venv ~/.venvs/scriba && source ~/.venvs/scriba/bin/activate
-pip install git+https://github.com/eugenionerelli/scriba
+pip install git+https://github.com/nerln/scriba
 ```
 
 Either way the `scriba` command lives inside that environment and nowhere else, so
