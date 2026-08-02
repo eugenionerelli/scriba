@@ -1,10 +1,29 @@
 """Diarization with pyannote, called directly instead of through whisperx.
 
-Why the bypass: `whisperx.DiarizationPipeline` throws the embeddings away. pyannote 3.3
-computes them anyway (they are how it decides who is who) and with
-`return_embeddings=True` hands them back for free, one centroid per speaker.
-Those are the same vectors that feed the voice registry in voices.py: without them,
-name attribution would have to start from scratch on every recording.
+pyannote computes one embedding per speaker anyway, since that is how it decides who is
+who, and hands them back when asked: one centroid per speaker. Those are the vectors
+that feed the voice registry in voices.py, and without them name attribution would start
+from scratch on every recording.
+
+Keeping them used to be the whole reason for the bypass, because whisperX 3.3.1 had no
+way to ask. That stopped being true in 3.8.6, the version pyproject.toml pins as the
+floor: `DiarizationPipeline.__call__` takes `return_embeddings=True` and returns the
+centroids alongside the segmentation. It discards them only by default.
+
+What still justifies the bypass is that whisperX's wrapper runs against pyannote 4 and
+nothing else. It calls `Pipeline.from_pretrained(..., token=...)`, and on pyannote 3.3.2
+that keyword is `use_auth_token`, so it raises TypeError before any audio is read. Past
+that it reads `output.speaker_diarization`, which only the pyannote 4 dataclass has:
+pyannote 3 returns a bare Annotation, or a 2-tuple once you ask for embeddings. `run`
+below handles all three shapes, which is what lets a pyannote 3 environment and a
+pyannote 4 one sit side by side here and be compared against each other. The wrapper
+also reads only the first two fields of pyannote 4's result and drops
+`exclusive_speaker_diarization`, with no flag to ask for it back. See `Diarization` for
+what that is and why this file keeps it.
+
+Not a reason: choosing the model. `DiarizationPipeline` takes `model_name` and falls
+back to community-1 only when it is None, so `_default_model()` could be handed straight
+to it.
 """
 
 from __future__ import annotations
