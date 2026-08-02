@@ -441,7 +441,7 @@ struct JobRowView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .help(job.names.isEmpty ? job.source
-              : job.source + " — " + job.names.values.sorted().joined(separator: ", "))
+              : job.source + " · " + job.names.values.sorted().joined(separator: ", "))
     }
 
     /// One line, in the order somebody scans it: when, how long, who.
