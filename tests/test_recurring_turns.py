@@ -849,14 +849,22 @@ def test_profiles_cap_the_number_of_cues():
     assert len(p.name_cues) == 8
 
 
-def test_profiles_group_speakerless_turns_under_one_label():
+def test_speech_nobody_was_attributed_to_is_not_a_person():
+    """Regression. Turns with no speaker used to be filed under the label "?".
+
+    That gave them a profile, and a profile with no name reaches the document as
+    an unidentified voice: a person in the room whose name is missing. It is the
+    opposite. Nobody claimed those words, and the transcript already says so on
+    the lines themselves.
+    """
     turns = [
         {"speaker": None, "start": 0.0, "end": 2.0, "text": "Una frase."},
         {"speaker": None, "start": 3.0, "end": 5.0, "text": "Un'altra frase."},
+        {"speaker": "S", "start": 6.0, "end": 9.0, "text": "Questa invece è di qualcuno."},
     ]
-    profiles = naming.build_profiles(turns, {}, "it")
-    assert [p.label for p in profiles] == ["?"]
-    assert profiles[0].turn_count == 2
+    profiles = naming.build_profiles(turns, {"S": 3.0}, "it")
+    assert [p.label for p in profiles] == ["S"]
+    assert profiles[0].turn_count == 1
 
 
 def test_profiles_of_an_empty_transcript():

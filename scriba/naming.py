@@ -101,7 +101,13 @@ def build_profiles(
     cues = extract_cues(turns, language)
     by_speaker: dict[str, list[dict]] = {}
     for t in turns:
-        by_speaker.setdefault(t.get("speaker") or "?", []).append(t)
+        # Speech nobody was attributed to is not a person. Filing it under "?"
+        # gave it a profile, and from there it reached the document's list of
+        # unidentified voices as though it were somebody in the room whose name
+        # was missing. It is the opposite: nobody claimed those words at all.
+        if not t.get("speaker"):
+            continue
+        by_speaker.setdefault(t["speaker"], []).append(t)
 
     profiles: list[SpeakerProfile] = []
     for label, items in by_speaker.items():
