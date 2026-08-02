@@ -98,10 +98,16 @@ are reassigned on every file: the same person is `SPEAKER_00` on Monday and
 `SPEAKER_02` on Tuesday. So you rename them by hand, every time, forever.
 
 pyannote computes a 256-dimensional embedding per speaker anyway, since that is how it
-decides who is who, and whisperX throws it away.
-[`diarize.py`](scriba/diarize.py) calls pyannote directly and keeps those vectors, and
-[`voices.py`](scriba/voices.py) files them under the name you assign. From then on the
-name attaches itself.
+decides who is who. whisperX discards it by default; since 3.8.6, the version pinned
+here, `return_embeddings=True` hands it back. So the embeddings on their own no longer
+argue for going around whisperX.
+
+[`diarize.py`](scriba/diarize.py) calls pyannote directly all the same, and now for a
+different reason: whisperX's diarization wrapper runs against pyannote 4 and nothing
+else, and it drops the overlap-free segmentation pyannote 4 also returns, with no flag
+to ask for it back. Calling pyannote directly keeps one file working on pyannote 3 and 4
+alike. The vectors survive either way, and [`voices.py`](scriba/voices.py) files them
+under the name you assign. From then on the name attaches itself.
 
 There are three zones rather than two:
 
@@ -403,7 +409,7 @@ is fast and exposes no diarization whatsoever, so it solves half the problem at 
 scriba/
   lang.py       language detection over several samples
   asr.py        whisper, tuned for conversational speech
-  diarize.py    pyannote called directly, so the embeddings survive
+  diarize.py    pyannote called directly, on either major version
   voices.py     the voice-print registry
   naming.py     the "who is who" briefing: textual cues plus registry matches
   export.py     output formats, the readable document first
