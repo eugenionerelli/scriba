@@ -13,8 +13,14 @@ from rich.console import Console
 from rich.table import Table
 
 from .config import Settings, keychain_set, hf_token, DATA_DIR
-from .pipeline import ERR_NO_TOKEN, Job
-from .voices import VoiceRegistry
+
+# pipeline and voices are imported inside the commands that use them.
+#
+# Importing them here pulled in pyannote, which pulls in lightning, which pulls
+# in torch: 5.6 measured seconds before typer had even looked at the arguments.
+# Every command paid it, including `jobs list`, which reads a handful of JSON
+# files and is the thing the macOS app asks for at launch. Opening the app took
+# six seconds to list recordings that were already on disk.
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="Turns a recorded conversation into a document that says who "
@@ -88,6 +94,7 @@ def run(
 
 def _run_one(f: Path, s, force) -> None:
     """One file, start to finish. Separate so a failure stays local to it."""
+    from .pipeline import Job
     # markup=False: the engine writes notes like "[bilingual, check by hand]" and
     # Rich reads square brackets as a style tag, so the note vanished and left
     # a bare warning symbol. The language warning is the project's main safety
@@ -128,6 +135,7 @@ def name(
                                    help="Do not save the voice print in the voice registry"),
 ):
     """Assign names to the voices and learn them for the next recordings."""
+    from .pipeline import Job
     mapping: dict[str, str] = {}
     for a in assignments:
         if "=" not in a:
@@ -260,6 +268,7 @@ def whoami(
         console.print(f'  [bold]scriba whoami "{folder}" --name "Your name"[/bold]')
         return
 
+    from .voices import VoiceRegistry
     reg = VoiceRegistry()
     added = 0
     for sample in top.samples:
@@ -277,6 +286,8 @@ def info(file: Path):
     Hidden: it is a wire format, and a list of things a person can do should not
     have a wire format in it.
     """
+    from .pipeline import Job
+
     job = Job(file)
     turns_path = job.dir / "turns.json"
     payload = {
@@ -301,6 +312,8 @@ def export(
     document changes. `run` would do it too, and would re-transcribe the audio
     whenever a setting the cache keys on has moved since.
     """
+    from .pipeline import Job
+
     for f in files:
         job = Job(f, report=lambda m: console.print(f"  {m}", style="dim",
                                                     markup=False, highlight=False))
@@ -321,6 +334,7 @@ def show(
     """
     import subprocess
 
+    from .pipeline import Job
     job = Job(file)
     outdir = job.dir / "output"
     written = sorted(outdir.glob("*")) if outdir.exists() else []
@@ -342,6 +356,8 @@ def show(
 @app.command()
 def dossier(file: Path):
     """Print the "who is who" briefing for a recording that has already been processed."""
+    from .pipeline import Job
+
     job = Job(file)
     path = job.dir / "who-is-who.md"
     if not path.exists():
@@ -357,6 +373,8 @@ app.add_typer(voices_app, name="voices")
 @voices_app.command("list")
 def voices_list():
     """Who is in the registry."""
+    from .voices import VoiceRegistry
+
     reg = VoiceRegistry()
     rows = reg.summary()
     if not rows:
@@ -374,6 +392,7 @@ def voices_list():
 @voices_app.command("forget")
 def voices_forget(name: str):
     """Remove a person from the registry."""
+    from .voices import VoiceRegistry
     reg = VoiceRegistry()
     if reg.forget(name):
         reg.save()
@@ -385,6 +404,7 @@ def voices_forget(name: str):
 @voices_app.command("rename")
 def voices_rename(old: str, new: str):
     """Change a person's name without losing the voice prints."""
+    from .voices import VoiceRegistry
     reg = VoiceRegistry()
     if reg.rename(old, new):
         reg.save()
