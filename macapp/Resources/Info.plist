@@ -22,6 +22,14 @@
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>Eugenio Nerelli</string>
+    <!-- These two strings are what the system prompt shows the person, so they say
+         what happens rather than asking for a capability. Both mention that the
+         audio stays here, because that is the first thing anybody wonders when an
+         application asks to listen. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Scriba records the conversation so it can write down who said what. The audio stays on this Mac.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Scriba uses the speech model built into macOS to turn what it hears into text. Nothing is sent to a server.</string>
     <key>NSSupportsAutomaticTermination</key>
     <false/>
     <key>NSSupportsSuddenTermination</key>

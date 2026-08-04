@@ -21,6 +21,14 @@ struct ScribaApp: App {
             // them on. Reaching for the mouse to start something that then runs
             // for an hour is the wrong shape.
             CommandMenu("Transcribe") {
+                Button("Record a conversation") {
+                    NotificationCenter.default.post(name: .scribaRecord, object: nil)
+                }
+                // Shift is not decoration: command-R is Refresh, and starting a
+                // recording by accident while reaching for it would be worse than
+                // the other way round.
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                Divider()
                 Button("Start the queue") {
                     NotificationCenter.default.post(name: .scribaStart, object: nil)
                 }
@@ -50,6 +58,7 @@ extension Notification.Name {
     static let scribaRefresh = Notification.Name("dev.nerelli.scriba.refresh")
     static let scribaStart = Notification.Name("dev.nerelli.scriba.start")
     static let scribaStop = Notification.Name("dev.nerelli.scriba.stop")
+    static let scribaRecord = Notification.Name("dev.nerelli.scriba.record")
 }
 
 /// Exists for one line: quitting has to take the engine with it.
@@ -64,6 +73,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct SettingsView: View {
     @State private var python = Engine.pythonPath
     @State private var engine = Engine.enginePath
+    @AppStorage("liveTextEnabled") private var liveText = false
+    @State private var token = ""
+    @State private var tokenState: TokenState = .unknown
+
+    enum TokenState: Equatable {
+        case unknown, present, saved, missing, failed(String)
+    }
 
     private var engineFolderState: String {
         var isDir: ObjCBool = false
@@ -98,17 +114,74 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(Engine.isEngineFolderUsable ? Color.secondary : Color.red)
             }
-            Section("pyannote token") {
-                Text("The Hugging Face token is set once from the terminal:")
-                    .font(.callout)
-                Text("scriba token hf_xxxxxxxx")
-                    .font(.system(.callout, design: .monospaced))
-                    .textSelection(.enabled)
-                Text("It ends up in the Keychain, not in a file.")
+            Section("Recording") {
+                Toggle("Show the words while recording", isOn: $liveText)
+                Text("A preview from the speech model built into macOS 26, about a "
+                     + "second behind the speaker and with its own punctuation. It is "
+                     + "not kept: the document is still produced afterwards by "
+                     + "whisper, which makes fewer mistakes. Set this before you "
+                     + "start; it cannot be changed mid-recording.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("pyannote token") {
+                // A secure field, and the value never leaves this window: it goes
+                // straight into the Keychain through the Security framework. The
+                // old instruction here was to type `scriba token hf_...` into a
+                // terminal, which leaves the secret in the shell history.
+                SecureField("hf_…", text: $token)
+                    .onSubmit(saveToken)
+                HStack {
+                    Button("Save in the Keychain", action: saveToken)
+                        .disabled(token.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if tokenState == .present || tokenState == .saved {
+                        Button("Remove") {
+                            Keychain.forget()
+                            token = ""
+                            tokenState = .missing
+                        }
+                    }
+                    Spacer()
+                }
+                Text(tokenMessage)
+                    .font(.caption)
+                    .foregroundStyle(tokenColour)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 320)
+        .frame(width: 520, height: 480)
+        .onAppear { tokenState = Keychain.hasToken() ? .present : .missing }
+    }
+
+    private func saveToken() {
+        if let problem = Keychain.save(token) {
+            tokenState = .failed(problem)
+        } else {
+            // Clear the field on success. Leaving the token sitting in a window
+            // that anybody walking past can reveal is the thing this section
+            // exists to avoid.
+            token = ""
+            tokenState = .saved
+        }
+    }
+
+    private var tokenMessage: String {
+        switch tokenState {
+        case .unknown: return ""
+        case .present: return "A token is stored. Type a new one to replace it."
+        case .saved: return "Saved. Diarization will work on the next run."
+        case .missing:
+            return "No token yet. Without one the recordings are transcribed but not "
+                 + "separated by speaker. Get one from huggingface.co/settings/tokens "
+                 + "and accept the conditions on pyannote/speaker-diarization-community-1."
+        case .failed(let why): return why
+        }
+    }
+
+    private var tokenColour: Color {
+        switch tokenState {
+        case .failed: return .red
+        case .saved, .present: return .secondary
+        default: return .secondary
+        }
     }
 }

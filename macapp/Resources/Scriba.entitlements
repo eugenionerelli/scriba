@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Without this the microphone is not refused: it is granted, and then the
+         recording contains digital silence. Measured on this machine: the access
+         request returns denied in two milliseconds with no dialog shown, the audio
+         engine starts anyway, and ninety thousand frames arrive at amplitude zero.
+         There is nothing in the interface to tell you, which is why the recorder
+         checks the level and says so. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

@@ -13,6 +13,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @StateObject private var engine = Engine()
     @StateObject private var store = JobsStore()
+    @StateObject private var recorder = Recorder()
 
     @State private var queue: [QueueItem] = []
     @State private var selection: Selection?
@@ -24,6 +25,7 @@ struct ContentView: View {
     @State private var filter = ""
 
     enum Selection: Hashable {
+        case recording
         case pending(UUID)
         case job(String)
     }
@@ -42,7 +44,21 @@ struct ContentView: View {
         .frame(minWidth: 900, minHeight: 560)
         .onAppear {
             store.reload()
-            AppDelegate.onQuit = { [weak engine] in engine?.terminateChild() }
+            AppDelegate.onQuit = { [weak engine, weak recorder] in
+                engine?.terminateChild()
+                // Quitting mid-recording has to close the file. The WAV header
+                // carries the length, and it is written when the file is closed:
+                // a recording left open is one every tool reads as zero seconds.
+                if let recorder, recorder.isRecording {
+                    let group = DispatchGroup()
+                    group.enter()
+                    Task { @MainActor in
+                        await recorder.stop()
+                        group.leave()
+                    }
+                    _ = group.wait(timeout: .now() + 3)
+                }
+            }
         }
         // Coming back to the window is the moment to look again. The same engine
         // is usable from a terminal, on purpose, so a transcription can appear
@@ -98,7 +114,21 @@ struct ContentView: View {
                presenting: engine.errorText) { _ in
             Button("Close") { engine.errorText = nil }
         } message: { Text($0) }
+        .onReceive(NotificationCenter.default.publisher(for: .scribaRecord)) { _ in
+            toggleRecording()
+        }
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: toggleRecording) {
+                    Label(recorder.isRecording ? "Stop recording" : "Record",
+                          systemImage: recorder.isRecording ? "stop.circle.fill" : "record.circle")
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .tint(recorder.isRecording ? .red : nil)
+                .help(recorder.isRecording
+                      ? "Stop and send it to be transcribed"
+                      : "Record a conversation straight into scriba")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button(action: openPanel) {
                     Label("Add recordings", systemImage: "plus")
@@ -113,6 +143,11 @@ struct ContentView: View {
 
     private var sidebar: some View {
         List(selection: $selection) {
+            if recorder.isRecording {
+                Section {
+                    RecordingRow(meter: recorder.meter).tag(Selection.recording)
+                }
+            }
             if !queue.isEmpty {
                 Section("Waiting to be transcribed") {
                     ForEach(queue) { item in
@@ -218,6 +253,16 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detail: some View {
+        if case .recording = selection, recorder.isRecording {
+            RecordingPanel(recorder: recorder, language: $language,
+                           languages: languages, onStop: toggleRecording)
+        } else {
+            transcriptionDetail
+        }
+    }
+
+    @ViewBuilder
+    private var transcriptionDetail: some View {
         // The running job no longer takes the pane over. It used to, which meant
         // that for the length of a transcription, which is the length of the
         // recording, there was nothing else you could look at: not the transcript
@@ -259,7 +304,7 @@ struct ContentView: View {
                 engine.load(jobDir: job.jobDir, source: job.sourcePath)
             }
         } else {
-            Welcome(processed: store.jobs.count)
+            Welcome(processed: store.jobs.count, onRecord: toggleRecording)
         }
     }
 
@@ -308,6 +353,30 @@ struct ContentView: View {
     }
 
     // MARK: - actions
+
+    /// Record, or stop and hand what was recorded to the queue.
+    ///
+    /// Stopping does not start the transcription. A recording that has just ended
+    /// is the moment somebody is most likely to want to say how many people were
+    /// in the room, or to record the next one straight away; a run that began on
+    /// its own would hold the machine for as long as the conversation lasted.
+    private func toggleRecording() {
+        Task {
+            if recorder.isRecording {
+                if let url = await recorder.stop() {
+                    add([url])
+                    if let item = queue.first(where: { $0.url == url }) {
+                        selection = .pending(item.id)
+                    }
+                } else {
+                    selection = nil
+                }
+            } else {
+                await recorder.start(language: language)
+                if recorder.isRecording { selection = .recording }
+            }
+        }
+    }
 
     private func accept(_ providers: [NSItemProvider]) -> Bool {
         var found = false
@@ -393,6 +462,200 @@ struct ContentView: View {
         guard let i = queue.firstIndex(where: { $0.id == id }) else { return }
         queue[i].state = state
     }
+}
+
+// MARK: - recording
+
+/// The sidebar row while the microphone is open.
+///
+/// It observes `LiveMeter` and nothing else, on purpose. The level moves ten
+/// times a second, and a view that observed the recorder as a whole would redraw
+/// the sidebar, the queue and the job list at that rate.
+struct RecordingRow: View {
+    @ObservedObject var meter: LiveMeter
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "record.circle.fill")
+                .foregroundStyle(.red)
+                .symbolEffect(.pulse)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Recording").lineLimit(1)
+                Text(elapsed).font(.caption).foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Spacer()
+            LevelBar(peak: meter.peak)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var elapsed: String {
+        let total = Int(meter.seconds)
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+}
+
+/// A level meter that exists to answer one question: is anything reaching the
+/// microphone. A recording that comes out silent is otherwise invisible until
+/// the transcript arrives empty half an hour later.
+struct LevelBar: View {
+    let peak: Float
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary)
+                Capsule()
+                    .fill(peak < 0.005 ? Color.orange : Color.green)
+                    .frame(width: max(2, geo.size.width * CGFloat(scaled)))
+            }
+        }
+        .frame(width: 44, height: 5)
+        .help(peak < 0.005 ? "Nothing is reaching the microphone" : "Input level")
+    }
+
+    /// Ears are logarithmic and so are meters. On a linear scale ordinary speech
+    /// sits in the leftmost tenth and the bar looks broken.
+    private var scaled: Double {
+        let db = 20 * log10(Double(max(peak, 1e-5)))
+        return min(1, max(0, (db + 50) / 50))
+    }
+}
+
+/// The pane while recording: how long, how loud, and the live text if it is on.
+struct RecordingPanel: View {
+    @ObservedObject var recorder: Recorder
+    @Binding var language: String
+    let languages: [(String, String)]
+    let onStop: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+            if recorder.liveTextEnabled {
+                LiveTextView(live: recorder.live)
+            } else {
+                explanation
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                RecordingClock(meter: recorder.meter)
+                Spacer()
+                // Shown, not offered. The analyzer is built against the microphone
+                // when the tap goes in, so this cannot change mid-session; it is
+                // here to say which way it was set, and the places to set it are
+                // the welcome screen and Settings.
+                Label(recorder.liveTextEnabled ? "Live text on" : "Live text off",
+                      systemImage: recorder.liveTextEnabled ? "text.bubble" : "text.bubble.badge.xmark")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .help("Set before recording starts, on the welcome screen or in Settings.")
+                Button(role: .destructive, action: onStop) {
+                    Label("Stop", systemImage: "stop.fill")
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            }
+            if let warning = recorder.warning {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(20)
+    }
+
+    private var explanation: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Recording to ~/.scriba/recordings")
+                .font(.callout)
+            Text("When you stop, the recording is added to the queue. Nothing is "
+                 + "transcribed until you press Transcribe, because that runs for "
+                 + "about as long as the conversation did.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Text("Turn on Live text before you start recording to see the words as "
+                 + "they are spoken. That preview comes from the speech model built "
+                 + "into macOS and is thrown away when you stop; the document is "
+                 + "always produced afterwards by whisper large-v3, which makes "
+                 + "fewer mistakes.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(20)
+        .frame(maxWidth: 620, alignment: .leading)
+    }
+}
+
+/// Split out so the ticking clock redraws by itself and not the whole panel.
+struct RecordingClock: View {
+    @ObservedObject var meter: LiveMeter
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "record.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.red)
+                .symbolEffect(.pulse)
+            Text(elapsed).font(.system(.title, design: .monospaced))
+            LevelBar(peak: meter.peak)
+        }
+    }
+
+    private var elapsed: String {
+        let total = Int(meter.seconds)
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+}
+
+/// The live preview. Committed text in the normal colour, the current hypothesis
+/// greyed: the second half is still moving and the reader should be able to see
+/// which half that is.
+struct LiveTextView: View {
+    @ObservedObject var live: LiveText
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let unavailable = live.unavailable {
+                        Label(unavailable, systemImage: "info.circle")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    // One Text built by concatenation rather than two views, so
+                    // the hypothesis flows on from the settled words instead of
+                    // starting its own paragraph. The modifier goes on the whole
+                    // thing: applied to the first half it stops being a Text.
+                    (Text(live.settled)
+                     + Text(live.settled.isEmpty ? "" : " ")
+                     + Text(live.guess).foregroundColor(.secondary))
+                        .textSelection(.enabled)
+
+                    if live.settled.isEmpty && live.guess.isEmpty && live.unavailable == nil {
+                        Text("Listening…").foregroundStyle(.secondary)
+                    }
+                    Color.clear.frame(height: 1).id(bottom)
+                }
+                .font(.system(size: 15))
+                .lineSpacing(4)
+                .frame(maxWidth: 720, alignment: .leading)
+                .padding(20)
+            }
+            .onChange(of: live.settled) { _, _ in
+                withAnimation { proxy.scrollTo(bottom, anchor: .bottom) }
+            }
+        }
+    }
+
+    private var bottom: String { "live-bottom" }
 }
 
 // MARK: - rows
@@ -554,6 +817,14 @@ struct UnfinishedPanel: View {
 
 struct Welcome: View {
     let processed: Int
+    let onRecord: () -> Void
+    /// The live preview has to be decided here, because once recording has started
+    /// it is too late: the analyzer is built against the microphone at the moment
+    /// the tap is installed. It used to live only in the recording panel, where
+    /// the switch was visible and disabled and there was no way to reach it in
+    /// time, which is a switch that does nothing.
+    @AppStorage("liveTextEnabled") private var liveText = false
+
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: "waveform").font(.system(size: 44)).foregroundStyle(.secondary)
@@ -564,9 +835,28 @@ struct Welcome: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 400)
+
+            Divider().frame(width: 260).padding(.vertical, 4)
+
+            Button(action: onRecord) {
+                Label("Record a conversation", systemImage: "record.circle")
+            }
+            .controlSize(.large)
+            Toggle("Show the words while recording", isOn: $liveText)
+                .toggleStyle(.checkbox)
+            Text(liveText
+                 ? "A preview from the model built into macOS, about a second behind. "
+                   + "It is not kept: the document still comes from whisper afterwards."
+                 : "The recording goes into the queue when you stop it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 380)
+
             if processed > 0 {
                 Text("\(processed) recordings already processed, listed in the sidebar.")
                     .font(.caption).foregroundStyle(.secondary)
+                    .padding(.top, 6)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
