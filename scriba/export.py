@@ -78,6 +78,9 @@ def source_doc(
     unresolved: list[str] | None = None,
     recorded_source: str = "",
     device: str = "",
+    untranscribed_seconds: float = 0.0,
+    speech_seconds: float = 0.0,
+    untranscribed_gaps: list[list[float]] | None = None,
     uncertain_below: float = 0.8,
 ) -> str:
     names = names or {}
@@ -133,6 +136,21 @@ def source_doc(
             "*(uncertain)*. The words are transcribed; which of the speakers said "
             "them is a guess, usually where two people talk over each other. Do not "
             "attribute a quote from those turns to a named person."
+        )
+    missing, speech = float(untranscribed_seconds or 0.0), float(speech_seconds or 0.0)
+    if missing >= 5.0:
+        # Say what is not here, and say where. A transcript reads as complete
+        # whatever it leaves out, and somebody reading it a month later has no way
+        # to tell. The timestamps are the point: they turn "something is missing"
+        # into a place to go and listen.
+        where = ", ".join(hhmmss(a) for a, _ in
+                          sorted(untranscribed_gaps or [], key=lambda g: g[0] - g[1])[:5])
+        lines.append(
+            f"- **Not transcribed**: {hhmmss(missing)} of the {hhmmss(speech)} of speech "
+            "in this recording produced no text: the diarizer heard somebody there and "
+            "the transcriber wrote nothing. Do not read the absence of a topic as "
+            + (f"evidence it was never raised. The longest of these start at {where}."
+               if where else "evidence it was never raised.")
         )
     lines.append(
         "- **Note**: this is automatic speech recognition. Figures, dates and proper "
@@ -321,6 +339,9 @@ def write_all(
                 unresolved=meta.get("unresolved"),
                 recorded_source=meta.get("recorded_source", ""),
                 device=meta.get("device", ""),
+                untranscribed_seconds=meta.get("untranscribed_seconds", 0.0),
+                speech_seconds=meta.get("speech_seconds", 0.0),
+                untranscribed_gaps=meta.get("untranscribed_gaps"),
             ))
         elif fmt == "md":
             path = outdir / FILENAMES["md"].format(stem=stem)

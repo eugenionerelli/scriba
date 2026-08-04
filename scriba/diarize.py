@@ -112,6 +112,54 @@ class Diarization:
             out[t.speaker] = out.get(t.speaker, 0.0) + t.duration
         return out
 
+    def gaps(self, segments: list[dict], *, min_gap: float = 2.0) -> list[tuple[float, float]]:
+        """Stretches the diarizer calls speech and the transcript leaves empty.
+
+        The two engines look at the same audio and disagree about where the speech
+        is. Whichever one writes the words has a gate in front of it deciding what
+        is worth decoding, and when that gate is wrong nothing says so: the
+        document simply does not contain what was said and reads perfectly well
+        without it.
+
+        `min_gap` is what makes the number mean anything. Every gap counts as
+        missing speech at first sight, and on a real 405 s conversation that came
+        to 81.8 s, a quarter of everything said. It was not: 212 of those gaps had
+        a median length of 0.14 s and were breath and pauses inside a turn, which
+        pyannote includes in its turns and no transcript ever writes down. What
+        was left above two seconds came to 21.6 s in seven gaps, and four of the
+        five longest, played back and read by a second engine, did contain speech,
+        one of them a whole sentence with a figure in it. So: two seconds, and the
+        gaps come back so a person can go and listen.
+        """
+        spans = sorted((float(x["start"]), float(x["end"])) for x in segments
+                       if x.get("start") is not None and x.get("end") is not None)
+        merged: list[list[float]] = []
+        for a, b in spans:
+            if merged and a <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], b)
+            else:
+                merged.append([a, b])
+
+        out: list[tuple[float, float]] = []
+        for turn in self.turns:
+            cursor = turn.start
+            for a, b in merged:
+                if b <= turn.start or a >= turn.end:
+                    continue
+                if a > cursor:
+                    out.append((cursor, min(a, turn.end)))
+                cursor = max(cursor, b)
+                if cursor >= turn.end:
+                    break
+            if cursor < turn.end:
+                out.append((cursor, turn.end))
+        return [(a, b) for a, b in out if b - a >= min_gap]
+
+    def untranscribed(self, segments: list[dict], *, min_gap: float = 2.0) -> tuple[float, float]:
+        """Seconds of speech the transcript never covered, and the total speech."""
+        return (sum(b - a for a, b in self.gaps(segments, min_gap=min_gap)),
+                sum(t.duration for t in self.turns))
+
     def longest_turns(self, speaker: str, n: int = 3) -> list[SpeakerTurn]:
         turns = [t for t in self.turns if t.speaker == speaker]
         return sorted(turns, key=lambda t: t.duration, reverse=True)[:n]

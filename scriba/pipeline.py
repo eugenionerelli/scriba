@@ -149,6 +149,10 @@ class Job:
         s = self.s
         payload = {
             "model": s.model, "compute_type": s.compute_type,
+            # Where it ran belongs in the fingerprint. float16 on the GPU and int8
+            # on the CPU do not produce the same numbers, and a cache that ignores
+            # that hands back the other one while reporting the one you asked for.
+            "asr_device": s.asr_device,
             "language": self.state.get("language", s.language),
             "beam_size": s.beam_size, "align": s.align,
             "vad_onset": s.vad_onset, "vad_offset": s.vad_offset,
@@ -295,7 +299,12 @@ class Job:
                         "transcribing again")
 
         s = Settings(**{**asdict(self.s), "language": self.state.get("language", self.s.language)})
-        self.report(f"transcription: {s.model} in {s.language} (CPU, {s.compute_type})")
+        # Say where it is actually running. This line used to hardcode "CPU",
+        # which was true for as long as there was no alternative and became a lie
+        # the moment there was one.
+        device, compute = asr._asr_device(s)
+        self.report(f"transcription: {s.model} in {s.language} "
+                    f"({'Metal' if device == 'mps' else 'CPU'}, {compute})")
         t = asr.transcribe(self.wav, s)
         write_atomic(path, json.dumps(
             {"segments": t.segments, "language": t.language, "word_level": t.word_level},
@@ -406,6 +415,28 @@ class Job:
                                       word_level=self.state.get("word_level", False))
             matches = self.identify(dia)
 
+            # What the diarizer heard and the transcriber never wrote down.
+            #
+            # These two look at the same audio and disagree about where the speech
+            # is, because the transcriber has a gate in front of it deciding what
+            # is worth decoding. When that gate is wrong nothing says so: the
+            # document simply lacks what was said and reads perfectly without it.
+            # The gaps are kept with their timestamps, because the only way to
+            # find out whether one of them held a sentence is to go and listen.
+            gaps = dia.gaps(segments)
+            missing = sum(b - a for a, b in gaps)
+            total = sum(t.duration for t in dia.turns)
+            self.state["untranscribed_seconds"] = round(missing, 1)
+            self.state["speech_seconds"] = round(total, 1)
+            self.state["untranscribed_gaps"] = [[round(a, 1), round(b, 1)] for a, b in gaps]
+            if missing >= 5.0:
+                worst = ", ".join(export.hhmmss(a) for a, _ in
+                                  sorted(gaps, key=lambda g: g[0] - g[1])[:3])
+                self.report(
+                    f"coverage: {missing:.0f}s of the {total:.0f}s of speech found by the "
+                    f"diarizer never reached the transcript, in {len(gaps)} stretches of "
+                    f"two seconds or more. The longest start at {worst}.")
+
         turns = diarize.to_turns(segments)
         write_atomic(self.dir / "turns.json",
                      json.dumps(turns, ensure_ascii=False, indent=1))
@@ -460,6 +491,9 @@ class Job:
             "source_file": self.source.name,
             "device": self.state.get("device", ""),
             "speaker_stats": speech,
+            "untranscribed_seconds": self.state.get("untranscribed_seconds", 0.0),
+            "speech_seconds": self.state.get("speech_seconds", 0.0),
+            "untranscribed_gaps": self.state.get("untranscribed_gaps", []),
             "unresolved": unresolved,
         }
         outputs = export.write_all(
