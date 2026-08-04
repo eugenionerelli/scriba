@@ -23,6 +23,9 @@ struct ContentView: View {
     @State private var isTargeted = false
     @State private var runningAll = false
     @State private var filter = ""
+    @State private var showArchived = false
+    @State private var deleting: JobSummary?
+    @State private var scanning: String?
 
     enum Selection: Hashable {
         case recording
@@ -149,9 +152,20 @@ struct ContentView: View {
                 }
             }
             if !queue.isEmpty {
-                Section("Waiting to be transcribed") {
+                Section("Waiting to be transcribed (\(queue.count))") {
                     ForEach(queue) { item in
                         QueueRow(item: item).tag(Selection.pending(item.id))
+                            .swipeActions(edge: .trailing) {
+                                // Swiping a queued recording takes it out of the
+                                // list and touches nothing on disk: the file is
+                                // still wherever it was.
+                                Button(role: .destructive) {
+                                    if item.state != .running {
+                                        queue.removeAll { $0.id == item.id }
+                                    }
+                                } label: { Label("Remove", systemImage: "xmark") }
+                                .disabled(item.state == .running)
+                            }
                     }
                     .onDelete { offsets in
                         // Never silently drop the one that is running.
@@ -176,9 +190,70 @@ struct ContentView: View {
             // which was which was to click and see.
             group("Ready to read", jobs: ready, empty: emptyReadyText)
             group("Not finished", jobs: unfinished, empty: nil)
+
+            // Archived recordings are still on disk and still searchable; they
+            // are out of the way rather than gone. The section only exists when
+            // there is something in it, and it stays shut until asked.
+            if !archived.isEmpty {
+                Section {
+                    if showArchived {
+                        ForEach(archived) { job in
+                            JobRowView(job: job).tag(Selection.job(job.jobDir))
+                                .swipeActions(edge: .trailing) { jobActions(job) }
+                        }
+                    }
+                } header: {
+                    Button {
+                        withAnimation { showArchived.toggle() }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: showArchived ? "chevron.down" : "chevron.right")
+                                .font(.caption2)
+                            Text("Archived (\(archived.count))")
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
         .searchable(text: $filter, placement: .sidebar,
-                    prompt: "Recording or person")
+                    prompt: "Recording, person or folder")
+        .confirmationDialog(
+            deleting.map { "Delete the work scriba did on \($0.source)?" } ?? "",
+            isPresented: Binding(get: { deleting != nil },
+                                 set: { if !$0 { deleting = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete the transcript and keep the recording", role: .destructive) {
+                if let job = deleting { forget(job, withSource: false) }
+            }
+            Button("Delete both", role: .destructive) {
+                if let job = deleting { forget(job, withSource: true) }
+            }
+            Button("Cancel", role: .cancel) { deleting = nil }
+        } message: {
+            Text("The transcript, the separated voices and the document can all be made "
+                 + "again from the recording, given the minutes of CPU. The recording "
+                 + "cannot be made again from anything.")
+        }
+    }
+
+    /// What a swipe offers on a processed recording. Archive first, because it is
+    /// the one you can undo.
+    @ViewBuilder
+    private func jobActions(_ job: JobSummary) -> some View {
+        Button(role: .destructive) { deleting = job } label: {
+            Label("Delete", systemImage: "trash")
+        }
+        Button {
+            archive(job, value: !job.archived)
+        } label: {
+            Label(job.archived ? "Restore" : "Archive",
+                  systemImage: job.archived ? "tray.and.arrow.up" : "archivebox")
+        }
+        .tint(.indigo)
     }
 
     @ViewBuilder
@@ -187,6 +262,7 @@ struct ContentView: View {
             Section("\(title) (\(jobs.count))") {
                 ForEach(jobs) { job in
                     JobRowView(job: job).tag(Selection.job(job.jobDir))
+                        .swipeActions(edge: .trailing) { jobActions(job) }
                 }
             }
         } else if let empty {
@@ -202,13 +278,15 @@ struct ContentView: View {
             : "Nothing matches \(filter)."
     }
 
-    /// The recordings with a document, newest first.
-    private var ready: [JobSummary] { matching.filter(\.isFinished) }
+    /// The recordings with a document, newest first. Archived ones sit apart.
+    private var ready: [JobSummary] { matching.filter { $0.isFinished && !$0.archived } }
+
+    private var archived: [JobSummary] { matching.filter(\.archived) }
 
     /// The ones that stopped somewhere along the way. Kept visible rather than
     /// hidden: the residue of a run that failed is exactly what somebody comes
     /// looking for, and it is also what takes up the disk.
-    private var unfinished: [JobSummary] { matching.filter { !$0.isFinished } }
+    private var unfinished: [JobSummary] { matching.filter { !$0.isFinished && !$0.archived } }
 
     /// Filter on the name of the recording and on the people in it, because
     /// "the one with Ada in it" is how anybody actually looks for a conversation.
@@ -217,6 +295,7 @@ struct ContentView: View {
         let needle = filter.lowercased()
         return store.jobs.filter { job in
             job.source.lowercased().contains(needle)
+                || job.collection.lowercased().contains(needle)
                 || job.names.values.contains { $0.lowercased().contains(needle) }
         }
     }
@@ -315,12 +394,35 @@ struct ContentView: View {
     }
 
     /// Command O, because that is what it is on every other Mac application.
+    ///
+    /// Folders are choosable too, and choosing one pulls in every recording
+    /// underneath it. A year of voice memos in dated subfolders is one gesture
+    /// rather than two hundred, and each one remembers which folder it came from.
     private func openPanel() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio, .movie]
         panel.allowsMultipleSelection = true
-        panel.message = "Recordings to add to the queue. Nothing starts until you press Transcribe."
+        panel.canChooseDirectories = true
+        panel.message = "Recordings, or a folder of them. Nothing starts until you press Transcribe."
         if panel.runModal() == .OK { add(panel.urls) }
+    }
+
+    /// Take a recording out of the everyday list, or put it back.
+    private func archive(_ job: JobSummary, value: Bool) {
+        Task {
+            await store.archive(jobDir: job.jobDir, value: value)
+            if case .job(let dir) = selection, dir == job.jobDir, value {
+                selection = nil
+            }
+        }
+    }
+
+    private func forget(_ job: JobSummary, withSource: Bool) {
+        deleting = nil
+        Task {
+            await store.forget(jobDir: job.jobDir, withSource: withSource)
+            if case .job(let dir) = selection, dir == job.jobDir { selection = nil }
+        }
     }
 
     /// Move the selection onto the job the finished recording produced, and take
@@ -390,13 +492,52 @@ struct ContentView: View {
         return found
     }
 
+    /// Add files, or everything under a folder, to the queue.
+    ///
+    /// Folders are walked off the main thread. A tree of a few hundred recordings
+    /// means a few hundred trips to the filesystem, and doing that while the
+    /// window is drawing is how a drag turns into a beachball.
     private func add(_ urls: [URL]) {
-        let known = Set(queue.map(\.url))
-        for url in urls where !known.contains(url) {
-            let item = QueueItem(url: url)
-            queue.append(item)
-            measure(item.id, url)
+        var files: [(url: URL, collection: String)] = []
+        var folders: [URL] = []
+        for url in urls {
+            var isDirectory: ObjCBool = false
+            let there = FileManager.default.fileExists(atPath: url.path,
+                                                       isDirectory: &isDirectory)
+            if there && isDirectory.boolValue {
+                folders.append(url)
+            } else if Library.isRecording(url) {
+                files.append((url, ""))
+            }
         }
+        enqueue(files)
+
+        guard !folders.isEmpty else { return }
+        scanning = folders.count == 1
+            ? "Looking through \(folders[0].lastPathComponent)…"
+            : "Looking through \(folders.count) folders…"
+        Task.detached(priority: .userInitiated) {
+            let found = folders.flatMap { Library.recordings(under: $0) }
+            await MainActor.run {
+                scanning = nil
+                enqueue(found)
+            }
+        }
+    }
+
+    /// The queued recordings that are new, in the order they were found.
+    private func enqueue(_ found: [(url: URL, collection: String)]) {
+        let known = Set(queue.map(\.url))
+        var added: [QueueItem] = []
+        for entry in found where !known.contains(entry.url) {
+            let item = QueueItem(url: entry.url, collection: entry.collection)
+            added.append(item)
+        }
+        guard !added.isEmpty else { return }
+        queue.append(contentsOf: added)
+        // Read the durations afterwards and one at a time. Doing it inside the
+        // loop above opened every container before the list had drawn once.
+        for item in added { measure(item.id, item.url) }
         if selection == nil, let first = queue.first {
             selection = .pending(first.id)
         }
@@ -407,7 +548,8 @@ struct ContentView: View {
         mark(item.id, .running)
         engine.run(file: item.url, language: language,
                    minSpeakers: expectedSpeakers > 0 ? expectedSpeakers : nil,
-                   maxSpeakers: expectedSpeakers > 0 ? expectedSpeakers : nil) { outcome in
+                   maxSpeakers: expectedSpeakers > 0 ? expectedSpeakers : nil,
+                   collection: item.collection) { outcome in
             switch outcome {
             case .finished:
                 mark(item.id, .finished)
@@ -674,6 +816,12 @@ struct QueueRow: View {
                 Text(item.url.lastPathComponent).lineLimit(1)
                 if case .failed(let why) = item.state {
                     Text(why).font(.caption).foregroundStyle(.orange)
+                } else if !item.collection.isEmpty {
+                    // Which folder it came from. Adding a tree of recordings puts
+                    // forty rows in the list whose names are all "Recording 12",
+                    // and the folder is the only thing telling them apart.
+                    Label(item.collection, systemImage: "folder")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
         }

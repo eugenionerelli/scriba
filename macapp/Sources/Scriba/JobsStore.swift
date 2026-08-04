@@ -13,6 +13,12 @@ struct JobSummary: Codable, Identifiable, Hashable {
     let speakers: Int
     let sizeMb: Double
     let hasOutput: Bool
+    /// Out of the everyday list, but every byte still on disk.
+    var archived: Bool = false
+    /// The subfolder it was found in, when it came from a folder rather than a
+    /// single file. It is the only thing that says which recordings belong
+    /// together when somebody adds a tree of them at once.
+    var collection: String = ""
 
     enum CodingKeys: String, CodingKey {
         case jobDir = "job_dir"
@@ -21,6 +27,7 @@ struct JobSummary: Codable, Identifiable, Hashable {
         case recorded, duration, state, names, speakers
         case sizeMb = "size_mb"
         case hasOutput = "has_output"
+        case archived, collection
     }
 
     /// What to show in the list. The engine's words are for a terminal.
@@ -47,6 +54,9 @@ struct QueueItem: Identifiable, Hashable {
     }
     let id = UUID()
     let url: URL
+    /// Where it sat relative to the folder it was added from, empty for a file
+    /// added on its own.
+    var collection: String = ""
     var state: State = .waiting
     /// Read once when the file joins the queue. Reading it from the estimate
     /// meant opening every queued file's container on the main thread on every
@@ -123,5 +133,49 @@ final class JobsStore: ObservableObject {
                 if let result, result != self.jobs { self.jobs = result }
             }
         }
+    }
+
+    /// Take a recording out of the everyday list, or put it back.
+    ///
+    /// The list moves straight away and the engine is told afterwards. Waiting
+    /// for a Python interpreter to start means a row that sits there for a
+    /// second after the swipe, which reads as a swipe that did not work.
+    func archive(jobDir: String, value: Bool) async {
+        if let i = jobs.firstIndex(where: { $0.jobDir == jobDir }) {
+            jobs[i].archived = value
+        }
+        await run(["jobs", "archive", jobDir] + (value ? [] : ["--undo"]))
+    }
+
+    /// Delete a job folder, and the recording it came from only if asked.
+    func forget(jobDir: String, withSource: Bool) async {
+        jobs.removeAll { $0.jobDir == jobDir }
+        await run(["jobs", "forget", jobDir, "--yes"] + (withSource ? ["--with-source"] : []))
+        reload()
+    }
+
+    /// One engine command, waited for, output discarded.
+    ///
+    /// A failure reloads the list rather than raising a dialog: the sidebar is
+    /// the truth, so a row that comes back says the archive did not happen, and
+    /// says it where the person is already looking.
+    private func run(_ arguments: [String]) async {
+        let python = Engine.pythonPath
+        let root = Engine.enginePath
+        let ok = await Task.detached(priority: .userInitiated) { () -> Bool in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: python)
+            proc.arguments = ["-m", "scriba.cli"] + arguments
+            proc.currentDirectoryURL = URL(fileURLWithPath: root)
+            var env = ProcessInfo.processInfo.environment
+            env["PYTHONPATH"] = root
+            proc.environment = env
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            guard (try? proc.run()) != nil else { return false }
+            proc.waitUntilExit()
+            return proc.terminationStatus == 0
+        }.value
+        if !ok { reload() }
     }
 }

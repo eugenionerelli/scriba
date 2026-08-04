@@ -129,11 +129,14 @@ final class Engine: ObservableObject {
     /// recording. Without it the caller has to poll `isRunning`, and a failure
     /// looks exactly like a success that ran quickly.
     func run(file: URL, language: String, minSpeakers: Int?, maxSpeakers: Int?,
-             onFinish: ((Outcome) -> Void)? = nil) {
+             collection: String = "", onFinish: ((Outcome) -> Void)? = nil) {
         guard !isRunning else { return }
         var args = ["-m", "scriba.cli", "run", file.path, "--lang", language]
         if let m = minSpeakers { args += ["--min-speakers", String(m)] }
         if let m = maxSpeakers { args += ["--max-speakers", String(m)] }
+        // The folder a recording came from has to outlive the queue: once it is
+        // a job, nothing else groups forty files all called "Recording 12".
+        if !collection.isEmpty { args += ["--collection", collection] }
         launch(args, on: file, startingPhase: .preparing, onFinish: onFinish)
     }
 

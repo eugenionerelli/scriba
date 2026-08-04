@@ -30,6 +30,11 @@ class JobRow:
     size_mb: float = 0.0
     audio_mb: float = 0.0
     has_output: bool = False
+    archived: bool = False
+    # Where the recording sat, relative to the folder it was added from. Add a
+    # tree of recordings and the subfolder is the only thing saying which
+    # conversation belongs with which, so it travels into the job.
+    collection: str = ""
 
 
 def _dir_size_mb(path: Path) -> float:
@@ -97,9 +102,74 @@ def inventory() -> list[JobRow]:
             size_mb=_dir_size_mb(job_dir),
             audio_mb=(wav.stat().st_size / 1_048_576) if wav.exists() else 0.0,
             has_output=has_output,
+            archived=bool(state.get("archived")),
+            collection=str(state.get("collection") or ""),
         ))
 
     return sorted(rows, key=lambda r: (r.recorded or "0000", r.source_name), reverse=True)
+
+
+def _edit_state(job_dir: Path, **changes) -> bool:
+    """Change a few fields of a job's state without disturbing the rest.
+
+    Read, alter, write through the same atomic rename everything else uses. A
+    job's state carries the transcript fingerprints and the names somebody typed
+    in, so a truncated write here costs the work rather than a flag.
+    """
+    from .config import write_atomic
+
+    path = job_dir / "state.json"
+    state: dict = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text())
+            state = loaded if isinstance(loaded, dict) else {}
+        except (ValueError, OSError):
+            state = {}
+    state.update(changes)
+    write_atomic(path, json.dumps(state, indent=2, ensure_ascii=False, default=str))
+    return True
+
+
+def archive(job_dir: Path, *, value: bool = True) -> bool:
+    """Take a recording out of the everyday list, keeping every byte of it.
+
+    Not deletion and not a separate folder: a flag, so the work is still there
+    and `scriba export` still finds it. The list is the thing being tidied, not
+    the disk.
+    """
+    return _edit_state(job_dir, archived=bool(value))
+
+
+def forget(job_dir: Path, *, with_source: bool = False) -> float:
+    """Delete a job folder, and only the source recording if asked. Returns MB freed.
+
+    The source is off by default and stays that way. Everything in the job folder
+    can be made again from the recording; the recording cannot be made again from
+    anything, and somebody clearing a list is not usually asking to lose the
+    audio of a conversation that already happened.
+    """
+    if not job_dir.is_dir():
+        return 0.0
+    freed = _dir_size_mb(job_dir)
+
+    source = ""
+    state_path = job_dir / "state.json"
+    if state_path.exists():
+        try:
+            loaded = json.loads(state_path.read_text())
+            source = loaded.get("source", "") if isinstance(loaded, dict) else ""
+        except (ValueError, OSError):
+            source = ""
+
+    shutil.rmtree(job_dir, ignore_errors=True)
+
+    if with_source and source:
+        path = Path(source)
+        if path.is_file():
+            freed += path.stat().st_size / 1_048_576
+            path.unlink(missing_ok=True)
+    return freed
 
 
 def prune(rows: list[JobRow], *, audio: bool, empty: bool,

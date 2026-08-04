@@ -68,6 +68,9 @@ def run(
     no_diarize: bool = typer.Option(False, "--no-diarize", help="Transcription only"),
     force: Stage = typer.Option(None, "--force", case_sensitive=False,
                                 help="redo one stage, ignoring the cache"),
+    collection: str = typer.Option(None, "--collection",
+                                   help="The group these recordings belong to, "
+                                        "usually the folder they came from"),
 ):
     """Transcribe and diarize one or more files."""
     s = _settings(language, model, min_speakers, max_speakers, no_diarize)
@@ -75,7 +78,7 @@ def run(
     for f in files:
         console.rule(f"[bold]{f.name}")
         try:
-            _run_one(f, s, force)
+            _run_one(f, s, force, collection)
         except (FileNotFoundError, ValueError, RuntimeError, json.JSONDecodeError) as e:
             # One bad file used to take the rest of the batch with it. Queue ten
             # memos overnight, hit an iCloud placeholder at position two, and the
@@ -92,7 +95,7 @@ def run(
         raise typer.Exit(1)
 
 
-def _run_one(f: Path, s, force) -> None:
+def _run_one(f: Path, s, force, collection: str | None = None) -> None:
     """One file, start to finish. Separate so a failure stays local to it."""
     from .pipeline import Job
     # markup=False: the engine writes notes like "[bilingual, check by hand]" and
@@ -101,6 +104,11 @@ def _run_one(f: Path, s, force) -> None:
     # net, and it was the one line that never reached the screen.
     job = Job(f, s, report=lambda m: console.print(f"  {m}", style="dim",
                                                   markup=False, highlight=False))
+    if collection:
+        # Written before the run rather than after, so a job that fails halfway
+        # is still filed under the folder it came from.
+        job.state["collection"] = collection
+        job._save_state()
     res = job.run(force=force.value if force else None)
 
     table = Table(show_header=True, header_style="bold")
@@ -528,6 +536,8 @@ def jobs_list(
             "speakers": r.speakers,
             "size_mb": round(r.size_mb, 1),
             "has_output": r.has_output,
+            "archived": r.archived,
+            "collection": r.collection,
         } for r in rows], ensure_ascii=False))
         return
     if not rows:
@@ -557,6 +567,55 @@ def jobs_list(
     audio = sum(r.audio_mb for r in rows)
     console.print(f"\n{len(rows)} jobs, {total:.0f} MB, of which {audio:.0f} MB is "
                   f"prepared audio that can be rebuilt from the source.")
+
+
+@jobs_app.command("archive")
+def jobs_archive(
+    names: list[str] = typer.Argument(..., help="Job folder names, or the recordings"),
+    undo: bool = typer.Option(False, "--undo", help="Put them back in the list"),
+):
+    """Take recordings out of the everyday list without deleting anything.
+
+    A flag on the job, not a move and not a deletion: every byte stays where it
+    was and `scriba export` still finds it. What gets tidied is the list.
+    """
+    from . import jobs as _jobs
+
+    for name in names:
+        job_dir = _job_dir(Path(name))
+        _jobs.archive(job_dir, value=not undo)
+        console.print(f"{'restored' if undo else 'archived'}: {job_dir.name}",
+                      markup=False, highlight=False)
+
+
+@jobs_app.command("forget")
+def jobs_forget(
+    names: list[str] = typer.Argument(..., help="Job folder names, or the recordings"),
+    with_source: bool = typer.Option(False, "--with-source",
+                                     help="Delete the original recording too"),
+    yes: bool = typer.Option(False, "--yes", help="Do not ask"),
+):
+    """Delete jobs. The original recordings are left alone unless you say otherwise.
+
+    Everything in a job folder can be made again from the recording, given the
+    minutes of CPU. The recording cannot be made again from anything, which is
+    why deleting it is a separate word you have to type.
+    """
+    from . import jobs as _jobs
+
+    targets = [_job_dir(Path(n)) for n in names]
+    if not yes:
+        what = "and the recordings they came from" if with_source else "keeping the recordings"
+        console.print(f"About to delete {len(targets)} job folder(s), {what}:",
+                      markup=False, highlight=False)
+        for t in targets:
+            console.print(f"  {t.name}", style="dim", markup=False, highlight=False)
+        if not typer.confirm("Go ahead?"):
+            raise typer.Abort()
+
+    freed = sum(_jobs.forget(t, with_source=with_source) for t in targets)
+    console.print(f"Deleted {len(targets)}, {freed:.0f} MB freed.",
+                  markup=False, highlight=False)
 
 
 @jobs_app.command("prune")
