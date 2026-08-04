@@ -584,6 +584,8 @@ def _readable(exc: BaseException) -> str:
     matching on its wording. In a terminal it is noise, and it was being printed
     verbatim: the app strips it and the person at the keyboard did not.
     """
+    from .pipeline import ERR_NO_TOKEN
+
     return str(exc).replace(ERR_NO_TOKEN, "").strip()
 
 

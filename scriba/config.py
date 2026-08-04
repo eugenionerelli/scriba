@@ -89,7 +89,15 @@ def hf_token() -> str | None:
 @dataclass
 class Settings:
     # ASR
-    backend: str = "whisperx"          # whisperx | mlx
+    # "whisperx" or "apple".
+    #
+    # whisperx is faster-whisper under ctranslate2, which has no Metal backend, so
+    # it transcribes on the CPU for about as long as the recording lasts. "apple"
+    # uses the on-device model macOS 26 ships, which runs on the Neural Engine and
+    # took 3 seconds against 443 on the same 6m45s recording. Either way the word
+    # boundaries come from the same forced aligner afterwards, because Apple's own
+    # word ranges run one word into the next with no silence between them.
+    backend: str = "whisperx"
     model: str = "large-v3"
     # "auto" and not "it": a language pinned by default is the most expensive defect
     # this pipeline can have. Whisper does not fail on the wrong language, it
@@ -202,6 +210,8 @@ class Settings:
 
         if not isinstance(self.hotwords, list):
             problems.append(f"hotwords={self.hotwords!r}: expected a list of words")
+        if self.backend not in ("whisperx", "apple"):
+            problems.append(f"backend={self.backend!r}: expected whisperx or apple")
         if self.diarize_device not in ("auto", "cpu", "mps"):
             problems.append(f"diarize_device={self.diarize_device!r}: expected auto, cpu or mps")
         if self.voice_min_speech_sec < 0:

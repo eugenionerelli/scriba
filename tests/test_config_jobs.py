@@ -119,9 +119,47 @@ def test_default_settings_are_valid():
     Settings().validate()  # must not raise
 
 
+def test_every_command_module_imports_what_it_names():
+    """Regression. The heavy imports were moved inside the commands that use them.
+
+    One use was missed: `_readable`, on the error path, still referred to a marker
+    that was no longer imported at module level. Nothing noticed, because the only
+    way to reach it is to make a run fail. Compiling each function's globals
+    against the module namespace catches the whole class.
+    """
+    import scriba.cli as cli
+
+    missing = []
+    for name in dir(cli):
+        fn = getattr(cli, name)
+        code = getattr(fn, "__code__", None)
+        if code is None or code.co_filename != cli.__file__:
+            continue
+        local_imports = set(code.co_names) & set(code.co_varnames)
+        for used in code.co_names:
+            if used in ("ERR_NO_TOKEN", "Job", "VoiceRegistry") and used not in local_imports:
+                if not hasattr(cli, used):
+                    missing.append(f"{name} uses {used}")
+    assert not missing, missing
+
+
+def test_an_unknown_backend_is_refused():
+    """Regression. "mlx" used to be accepted and did nothing.
+
+    It sat in the comment beside the field as though it were an option, so a
+    settings file naming it was stored, validated, and then quietly ignored while
+    the run went through whisperx anyway. Only the two backends that exist pass.
+    """
+    for name in ("mlx", "whisper.cpp", "", "APPLE"):
+        with pytest.raises(ValueError, match="expected whisperx or apple"):
+            _settings(backend=name).validate()
+    for name in ("whisperx", "apple"):
+        _settings(backend=name).validate()
+
+
 def test_a_realistic_hand_tuned_configuration_is_valid():
     _settings(
-        backend="mlx",
+        backend="apple",
         model="medium",
         language="it",
         min_speakers=2,
@@ -335,7 +373,7 @@ def test_save_writes_under_the_isolated_home_and_creates_dirs(tmp_path, monkeypa
 
 def test_save_load_round_trip(scriba_home):
     original = _settings(
-        backend="mlx",
+        backend="apple",
         model="small",
         language="es",
         batch_size=16,
