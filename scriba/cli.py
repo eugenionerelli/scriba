@@ -366,6 +366,91 @@ def dossier(file: Path):
     console.print(path.read_text(), markup=False, highlight=False)
 
 
+def _job_dir(target: Path) -> Path:
+    """The working folder for a recording, whether or not the recording is still there.
+
+    Everything a check needs is cached in the job folder: the 16 kHz audio, the
+    transcript, the diarization. Requiring the original file as well meant that
+    moving a voice memo off the Desktop after processing it made the work
+    unreachable, with a "file not found" naming a file nobody was asking about.
+    """
+    from .config import JOBS_DIR
+    from .pipeline import job_slug
+
+    target = Path(target).expanduser()
+    if target.is_dir() and (target / "transcript.json").exists():
+        return target
+    if target.exists():
+        return JOBS_DIR / job_slug(target.resolve())
+    for candidate in (JOBS_DIR / target.name, *sorted(JOBS_DIR.glob(f"{target.name}-*"))):
+        if candidate.is_dir():
+            return candidate
+    raise typer.BadParameter(
+        f"no recording or job folder called {target.name}. "
+        "`scriba jobs list` shows what has been processed.")
+
+
+@app.command()
+def verify(
+    file: Path = typer.Argument(..., help="A recording already transcribed"),
+    listen: bool = typer.Option(False, "--listen",
+                                help="Also build a blind listening test of the disagreements"),
+):
+    """Check the transcript against a second engine and report where they disagree.
+
+    A transcript reads exactly the same whether it is right or whether a sentence
+    has been filed thirteen seconds from where it was said. This runs the other
+    engine over the same audio, puts both through the same aligner, and prints the
+    places the two disagree. It changes nothing: the answer is a list of seconds
+    worth listening to.
+    """
+    from . import verify as _verify
+    from .config import Settings
+    from .export import hhmmss
+
+    job_dir = _job_dir(file)
+    rep = _verify.run(job_dir, Settings.load(),
+                      report=lambda m: console.print(f"  {m}", style="dim",
+                                                     markup=False, highlight=False))
+
+    console.print(
+        f"{rep.compared} words compared against {rep.engine}: "
+        f"median difference {rep.median_offset:.2f}s, "
+        f"{rep.within_one_second:.0%} within a second",
+        markup=False, highlight=False)
+    if not rep.zones:
+        console.print("The two engines put every word in the same place.",
+                      markup=False, highlight=False)
+    for z in rep.zones:
+        moved = z.other_start - z.start
+        note = " and this changes who is credited with it" if z.changes_speaker else ""
+        console.print(
+            f"  {hhmmss(z.start)}  the transcript places {z.words} "
+            f"word{'s' if z.words != 1 else ''} {abs(moved):.0f}s "
+            f"{'late' if moved > 0 else 'early'}{note}: {z.text[:60]}",
+            markup=False, highlight=False)
+    for sil in rep.silences:
+        # The loudest thing this check can find, so it goes above the counts. The
+        # words are the other engine's, shown so somebody can decide in a second
+        # whether that stretch mattered.
+        console.print(
+            f"  {hhmmss(sil.start)}  nothing in the transcript for "
+            f"{sil.end - sil.start:.0f}s, where {rep.engine} heard "
+            f"{sil.words_there} words: {sil.text[:70]}",
+            style="yellow", markup=False, highlight=False)
+    if rep.only_here or rep.only_there:
+        console.print(
+            f"  words only one engine heard: {rep.only_here} in the transcript, "
+            f"{rep.only_there} in the {rep.engine} pass",
+            style="dim", markup=False, highlight=False)
+
+    if listen:
+        import subprocess
+        import sys
+        tool = Path(__file__).resolve().parent.parent / "tools" / "compare-engines.py"
+        subprocess.run([sys.executable, str(tool), str(job_dir)], check=False)
+
+
 voices_app = typer.Typer(help="The voice print registry.")
 app.add_typer(voices_app, name="voices")
 

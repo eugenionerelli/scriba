@@ -38,6 +38,67 @@ class Transcript:
     word_level: bool
 
 
+def mps_available() -> tuple[bool, str]:
+    """Whether this install of ctranslate2 can use the GPU, and why not when it cannot.
+
+    Upstream ctranslate2 has no Metal backend, which is the single reason a
+    seven-minute recording used to cost seven minutes of CPU. OpenNMT/CTranslate2#2077
+    adds one, and it is not in any released wheel: a build from that branch has to be
+    installed on purpose. So this asks the library rather than the operating system.
+    A Mac with a perfectly good GPU and a stock wheel must come back False.
+    """
+    try:
+        import ctranslate2
+    except ImportError:
+        return False, "ctranslate2 is not installed"
+    if not hasattr(ctranslate2, "get_mps_device_count"):
+        return False, ("this ctranslate2 has no Metal backend: it is the released "
+                       "wheel, which is CPU-only on Apple Silicon")
+    try:
+        if ctranslate2.get_mps_device_count() < 1:
+            return False, "no Metal device"
+    except Exception as exc:  # pragma: no cover - depends on the build
+        return False, f"Metal unavailable: {exc}"
+    return True, ""
+
+
+def _asr_device(s) -> tuple[str, str]:
+    """The device to decode on, and the numeric type to decode in.
+
+    They are decided together because the sensible type differs per device: int8 is
+    what makes the CPU bearable and is the slowest thing the GPU can be asked to do.
+    Measured on an M4 with the branch build, batch of one: MPS int8 57.6 s against
+    MPS float16 24.9 s and CPU int8 50.5 s. Asking for int8 on Metal would look like
+    asking for the fast path and get the slowest one in the build.
+
+    "auto" prefers Metal when the installed ctranslate2 has it. On the reference
+    recording that is 80 s against 443 s, with 724 words against 725 and the same
+    text; the whole difference is where the matrices are multiplied.
+    """
+    wanted = getattr(s, "asr_device", "auto")
+    if wanted == "cpu":
+        return "cpu", s.compute_type
+
+    ok, why = mps_available()
+    if wanted == "mps":
+        if not ok:
+            raise RuntimeError(
+                f"asr_device is set to mps but {why}. Either install a ctranslate2 "
+                "built with -DWITH_MPS=ON, or set asr_device back to auto.")
+        return "mps", _mps_compute_type(s.compute_type)
+    return ("mps", _mps_compute_type(s.compute_type)) if ok else ("cpu", s.compute_type)
+
+
+def _mps_compute_type(requested: str) -> str:
+    """float16 on the GPU unless somebody insisted on something else.
+
+    int8 is the scriba default because of the CPU, and carrying it over to Metal
+    would silently pick the slowest configuration this build offers. A person who
+    writes float32 in the settings meant it and gets it.
+    """
+    return "float16" if requested in ("int8", "int8_float32", "auto", "default") else requested
+
+
 def _cpu_threads(requested: int) -> int:
     if requested > 0:
         return requested
@@ -100,17 +161,20 @@ def transcribe(
     if s.backend == "apple":
         return _transcribe_apple(wav, s, progress=progress)
 
-    device = "cpu"  # ctranslate2 runs on CPU on a Mac: say so instead of pretending
+    device, compute_type = _asr_device(s)
     threads = _cpu_threads(s.threads)
     # "auto" is a scriba value, not a whisper one: by this point it must already be
     # resolved to an ISO code. Passing it through would make whisper look for a
     # language called "auto" and fail with an opaque error halfway through loading.
     language = None if s.language in ("", "auto", None) else s.language
 
+    if device == "mps":
+        print(f"[scriba] transcription: {s.model} on Metal ({compute_type})")
+
     model = whisperx.load_model(
         s.model,
         device=device,
-        compute_type=s.compute_type,
+        compute_type=compute_type,
         language=language,
         asr_options=build_asr_options(s),
         vad_options={"vad_onset": s.vad_onset, "vad_offset": s.vad_offset},

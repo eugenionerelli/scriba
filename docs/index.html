@@ -652,8 +652,10 @@ scriba jobs list</pre>
       <div class="rise">
         <p class="lede">
           The words come from whisperX 3.8.6 with the <code>large-v3</code> model, running
-          on faster-whisper and <code>ctranslate2</code>, which has no Metal backend and so
-          stays on the CPU. Separating the voices is pyannote, called directly instead of
+          on faster-whisper and <code>ctranslate2</code>, which has no Metal backend in any
+          released version and so stays on the CPU, unless you build the one from the
+          open pull request: the same recording then takes 80 seconds instead of 443,
+          for the same words. Separating the voices is pyannote, called directly instead of
           through whisperX, on the community-1 model.
         </p>
         <p>

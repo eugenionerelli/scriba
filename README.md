@@ -358,9 +358,11 @@ happening from wherever you are in the app; the pane is yours.
 
 ## Speed, and why it is what it is
 
-`ctranslate2`, the engine under faster-whisper, has no Metal backend, so on Apple
-Silicon it runs entirely on the CPU. Measured on an M4 with 16 GB, the same 6:45 of
-Spanish audio through both versions, same settings, warm model cache:
+`ctranslate2`, the engine under faster-whisper, has no Metal backend in any released
+version, so on Apple Silicon it runs entirely on the CPU. That is the single reason
+a seven-minute recording used to cost seven minutes on a machine whose GPU sat idle.
+Measured on an M4 with 16 GB, the same 6:45 of Spanish audio through both versions,
+same settings, warm model cache:
 
 | Stage | whisperX 3.3.1 | whisperX 3.8.6 |
 |---|---|---|
@@ -370,6 +372,39 @@ Spanish audio through both versions, same settings, warm model cache:
 | Forced alignment, word level | 13.3s | 14.1s |
 | Diarization, pyannote 3.1 on CPU | 372.3s | 211.0s |
 | Diarization, community-1 on CPU | | 225.9s |
+
+### Metal, if you build for it
+
+There is an open pull request adding a Metal backend to ctranslate2
+([OpenNMT/CTranslate2#2077](https://github.com/OpenNMT/CTranslate2/pull/2077)). It is
+not in any wheel: it has to be built from that branch and installed on purpose. With
+it in place, the same 6:45 recording:
+
+| | Transcription | Words |
+|---|---|---|
+| CPU, int8 | 443.1s | 725 |
+| Metal, float16 | 80.4s | 724 |
+
+Same text, five and a half times faster, and the difference is only where the
+matrices are multiplied. `asr_device` decides: `auto` uses Metal when the installed
+ctranslate2 has it and the CPU otherwise, so a stock install behaves exactly as it
+did. `mps` insists and fails with an explanation rather than quietly running slowly.
+
+Build it with:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DWITH_MPS=ON -DWITH_ACCELERATE=ON \
+      -DWITH_MKL=OFF -DWITH_RUY=ON -DOPENMP_RUNTIME=NONE -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+```
+
+`WITH_RUY` is not optional even though the branch's own instructions leave it out:
+without it the build has no int8 on the CPU at all, so falling back to the CPU stops
+working. `CMAKE_POLICY_VERSION_MINIMUM` is needed on CMake 4 because a vendored
+dependency declares an ancient minimum.
+
+Live text while recording does not go through any of this. It runs on Apple's own
+model on the Neural Engine, which is neither the CPU nor the GPU, and costs about
+ten megabytes.
 | Diarization, community-1 on Metal | | **35.7s** |
 | **Total, best of each** | **16m 37s** | **8m 13s** |
 

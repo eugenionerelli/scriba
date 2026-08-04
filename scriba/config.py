@@ -98,6 +98,16 @@ class Settings:
     # boundaries come from the same forced aligner afterwards, because Apple's own
     # word ranges run one word into the next with no silence between them.
     backend: str = "whisperx"
+    # "auto", "cpu" or "mps". Where the whisper decoder runs.
+    #
+    # For most of this project's life there was nothing to decide: ctranslate2, the
+    # engine under faster-whisper, had no Metal backend, so a seven-minute recording
+    # cost seven minutes of CPU on a machine with an idle GPU. There is now a branch
+    # that adds one (OpenNMT/CTranslate2#2077), not in any released wheel, and with
+    # it installed the reference recording went from 443 s to 80 s for the same 724
+    # words. "auto" asks the library whether it has the backend and uses it if so, so
+    # a stock wheel keeps doing exactly what it did before.
+    asr_device: str = "auto"
     model: str = "large-v3"
     # "auto" and not "it": a language pinned by default is the most expensive defect
     # this pipeline can have. Whisper does not fail on the wrong language, it
@@ -212,6 +222,8 @@ class Settings:
             problems.append(f"hotwords={self.hotwords!r}: expected a list of words")
         if self.backend not in ("whisperx", "apple"):
             problems.append(f"backend={self.backend!r}: expected whisperx or apple")
+        if self.asr_device not in ("auto", "cpu", "mps"):
+            problems.append(f"asr_device={self.asr_device!r}: expected auto, cpu or mps")
         if self.diarize_device not in ("auto", "cpu", "mps"):
             problems.append(f"diarize_device={self.diarize_device!r}: expected auto, cpu or mps")
         if self.voice_min_speech_sec < 0:
