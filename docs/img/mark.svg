@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="scriba">
+  <!-- The mark is the punctuation the tool produces. Every line of a scriba
+       document opens with a name and a colon, and the colon is the moment the
+       words get attached to a person, which is the whole job.
+
+       Two rules earned by trying the other way. The dots sit a colon's own
+       distance apart, not the distance between the lines, or they read as
+       bullets. And there are two lines, not three: with three the whole thing
+       becomes a list icon, which is a different piece of software. -->
+  <rect width="64" height="64" rx="14" fill="#0E0D0C"/>
+  <g fill="#E0A458">
+    <circle cx="20" cy="29" r="4"/>
+    <circle cx="20" cy="39" r="4"/>
+  </g>
+  <g fill="#EDE8DE">
+    <rect x="32" y="25" width="20" height="6" rx="3"/>
+    <rect x="32" y="37" width="13" height="6" rx="3"/>
+  </g>
+</svg>

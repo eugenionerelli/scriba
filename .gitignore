@@ -5,6 +5,8 @@ __pycache__/
 # app build
 macapp/.build/
 macapp/Scriba.app/
+# Generated from docs/img/mark.svg by make-icon.sh, like the app bundle itself.
+macapp/Resources/Scriba.icns
 
 # Work reports stay out of the repo: they discuss real recordings.
 reports/

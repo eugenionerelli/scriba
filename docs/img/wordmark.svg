@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 64" width="260" height="64" role="img" aria-label="scriba">
+  <!-- The name carries the colon, because that is how the tool writes a line and
+       because it makes the wordmark say what the product does without a tagline.
+       System stack on purpose: the page it sits on loads no webfonts. -->
+  <text x="0" y="45"
+        font-family="ui-rounded, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"
+        font-size="44" font-weight="600" letter-spacing="-0.5" fill="#EDE8DE">scriba</text>
+  <text x="132" y="45"
+        font-family="ui-rounded, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"
+        font-size="44" font-weight="600" fill="#E0A458">:</text>
+</svg>

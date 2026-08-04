@@ -18,21 +18,24 @@ enum Keychain {
 
     private static var account: String { NSUserName() }
 
-    private static var query: [String: Any] {
+    /// The service name is a parameter so the tests can round-trip against a
+    /// throwaway one. The real entry holds the user's token and nothing automated
+    /// should be writing over it to prove that writing works.
+    private static func query(_ service: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service]
     }
 
     /// Whether a token is there. Deliberately does not return it: nothing in this
     /// application needs to see the value, only whether one has been set.
-    static func hasToken() -> Bool {
-        var q = query
+    static func hasToken(service: String = service) -> Bool {
+        var q = query(service)
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         return SecItemCopyMatching(q as CFDictionary, nil) == errSecSuccess
     }
 
     /// Store, replacing whatever was there. Returns nil on success, a message otherwise.
-    static func save(_ token: String) -> String? {
+    static func save(_ token: String, service: String = service) -> String? {
         let value = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return "The token is empty." }
         guard let data = value.data(using: .utf8) else { return "The token is not text." }
@@ -41,9 +44,9 @@ enum Keychain {
         // item's attributes exactly, and an item written by the `security` command
         // does not necessarily carry the same ones as an item written here; the
         // update then succeeds against nothing and the old token survives.
-        SecItemDelete(query as CFDictionary)
+        SecItemDelete(query(service) as CFDictionary)
 
-        var item = query
+        var item = query(service)
         item[kSecAttrAccount as String] = account
         item[kSecValueData as String] = data
         // The engine runs as a separate process launched by this application and
@@ -59,7 +62,7 @@ enum Keychain {
         return nil
     }
 
-    static func forget() {
-        SecItemDelete(query as CFDictionary)
+    static func forget(service: String = service) {
+        SecItemDelete(query(service) as CFDictionary)
     }
 }

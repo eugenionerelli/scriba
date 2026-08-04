@@ -8,6 +8,8 @@
     <string>Scriba</string>
     <key>CFBundleExecutable</key>
     <string>Scriba</string>
+    <key>CFBundleIconFile</key>
+    <string>Scriba</string>
     <key>CFBundleIdentifier</key>
     <string>dev.nerelli.scriba</string>
     <key>CFBundlePackageType</key>

@@ -10,7 +10,7 @@
 <meta property="og:image" content="https://nerln.github.io/scriba/img/04-who-is-speaking.png">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230E0D0C'/><g fill='%23E0A458'><rect x='7' y='13' width='2' height='6'/><rect x='12' y='8' width='2' height='16'/><rect x='17' y='11' width='2' height='10'/><rect x='22' y='14' width='2' height='4'/></g></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%230E0D0C'/><g fill='%23E0A458'><circle cx='20' cy='29' r='4'/><circle cx='20' cy='39' r='4'/></g><g fill='%23EDE8DE'><rect x='32' y='25' width='20' height='6' rx='3'/><rect x='32' y='37' width='13' height='6' rx='3'/></g></svg>">
 
 <style>
 /* ===========================================================================
@@ -121,6 +121,9 @@ header.hero {
   margin-bottom: clamp(2.5rem, 6vw, 4.5rem);
 }
 .wordmark svg { display: block; }
+/* The colon belongs to the name. It is the tool's whole output in one character:
+   a line begins with who spoke, then this, then what they said. */
+.wordmark-colon { color: var(--amber); }
 
 h1 {
   font-size: clamp(2.5rem, 1.5rem + 4.4vw, 4.6rem);
@@ -333,13 +336,19 @@ footer a:hover { color: var(--amber); }
 <header class="hero">
   <div class="wrap">
     <div class="wordmark">
-      <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
-        <g fill="#E0A458">
-          <rect x="5" y="13" width="2" height="6"/><rect x="11" y="7" width="2" height="18"/>
-          <rect x="17" y="10" width="2" height="12"/><rect x="23" y="14" width="2" height="4"/>
+      <!-- A colon and two lines of speech: what every line of a scriba document
+           looks like, and the moment the words get attached to a person. A
+           waveform stood here before, which is what every audio tool on earth
+           uses and says nothing about this one. -->
+      <svg width="24" height="24" viewBox="0 0 64 64" aria-hidden="true">
+        <rect width="64" height="64" rx="14" fill="#161413"/>
+        <g fill="#E0A458"><circle cx="20" cy="29" r="4"/><circle cx="20" cy="39" r="4"/></g>
+        <g fill="#EDE8DE">
+          <rect x="32" y="25" width="20" height="6" rx="3"/>
+          <rect x="32" y="37" width="13" height="6" rx="3"/>
         </g>
       </svg>
-      scriba
+      scriba<span class="wordmark-colon">:</span>
     </div>
 
     <div class="hero-grid">

@@ -21,6 +21,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Scriba"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+# The icon is drawn from the same mark as the site, and generated rather than
+# committed: a clone has the drawing and the code that renders it, not a binary
+# nobody can review. Made here on the first build.
+[[ -f Resources/Scriba.icns ]] || ./make-icon.sh >/dev/null
+cp Resources/Scriba.icns "$APP/Contents/Resources/Scriba.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # Ad-hoc signature: enough to run locally. Without it, macOS 26 refuses to launch
