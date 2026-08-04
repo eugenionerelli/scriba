@@ -1,6 +1,26 @@
 import SwiftUI
 
+/// The entry point picks between the window and the one command-line check.
+///
+/// SwiftUI's App protocol supplies its own `main`, so intercepting the arguments
+/// means owning the entry point and calling it. The check has to live in this
+/// binary rather than a tool of its own: it drives LiveTranscriber, and a second
+/// executable target cannot depend on an executable target.
 @main
+struct Entry {
+    static func main() {
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--live-check"), i + 1 < args.count {
+            var language = "en"
+            if let l = args.firstIndex(of: "--lang"), l + 1 < args.count {
+                language = args[l + 1]
+            }
+            LiveCheck.run(path: args[i + 1], language: language)
+        }
+        ScribaApp.main()
+    }
+}
+
 struct ScribaApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
