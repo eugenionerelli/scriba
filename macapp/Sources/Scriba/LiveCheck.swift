@@ -76,8 +76,15 @@ enum LiveCheck {
                              firstGuess ?? -1))
                 print("committed utterances: \(finals), words: \(words)")
                 if let last = lags.last {
-                    print(String(format: "last committed text: %.2f s, audio ended at %.2f s, "
-                                 + "so %.2f s behind", last, seconds, last - seconds))
+                    // A last utterance that lands before the file ends is not the
+                    // transcriber running early, it is trailing silence. Printing
+                    // that as a negative delay reads as a bug in the clock.
+                    let delta = last - seconds
+                    let tail = delta >= 0
+                        ? String(format: "%.2f s after the audio ended", delta)
+                        : String(format: "%.2f s before the end, which is the silence "
+                                 + "at the tail of the recording", -delta)
+                    print(String(format: "last committed text: %.2f s, ", last) + tail)
                 }
                 print(String(format: "wall clock: %.1f s for %.1f s of audio", elapsed, seconds))
                 if words == 0 {
